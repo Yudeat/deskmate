@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<style>
+  :root { color-scheme: light; }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font: 13px/1.5 -apple-system, "SF Mono", Menlo, monospace;
+    background: #fff8f4; color: #4a3f38;
+    border: 1px solid #f0e2d8; border-radius: 12px; overflow: hidden; user-select: none;
+  }
+  .wrap { padding: 14px 16px; }
+  h1 { font-size: 11px; font-weight: 600; color: #d97a42; margin-bottom: 8px;
+       letter-spacing: 0.08em; text-transform: uppercase; }
+  #reply { white-space: pre-wrap; word-break: break-word; max-height: 110px;
+           overflow-y: auto; margin-bottom: 10px; user-select: text; }
+  #extra { color: #8a7a70; font-size: 12px; margin-bottom: 10px; word-break: break-word; user-select: text; }
+  #copy-row { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+  #copied { color: #4a7c59; font-size: 11px; }
+  .row { display: flex; gap: 8px; }
+  input { flex: 1; font: inherit; background: #fffdfb; color: #4a3f38;
+          border: 1px solid #ead9cc; border-radius: 6px; padding: 6px 8px; outline: none; }
+  input:focus { border-color: #d97a42; }
+  button { font: 600 12px inherit; border: 1px solid #ead9cc; background: #f6ece2;
+           color: #4a3f38; border-radius: 6px; padding: 6px 12px; cursor: pointer; }
+  button:hover { background: #eedfd0; }
+  button.primary { background: #d97a42; border-color: #d97a42; color: #fff8f4; }
+  .hidden { display: none !important; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1 id="title">deskmate</h1>
+  <div id="reply"></div>
+  <div id="copy-row" class="hidden">
+    <button id="copy-btn">Copy</button>
+    <span id="copied" class="hidden">Copied ✓</span>
+  </div>
+  <div id="extra" class="hidden"></div>
+  <div id="input-row" class="row hidden">
+    <input id="ask" placeholder="What do you want to know or do? (optional)" maxlength="1000"/>
+    <button id="ask-btn" class="primary">Ask</button>
+  </div>
+  <div id="action-row" class="row hidden">
+    <button id="do-btn" class="primary">Do it</button>
+    <button id="cancel-btn">Cancel</button>
+  </div>
+  <div id="settings-row" class="row hidden">
+    <button id="settings-btn">Open System Settings</button>
+    <button id="dismiss-btn">Dismiss</button>
+  </div>
+</div>
+<script>
+  const $ = (id) => document.getElementById(id);
+  let state = null;
+
+  window.deskmate.onState((s) => { state = s; render(s); });
+
+  function render(s) {
+    $('title').textContent = 'deskmate' + (s.mode === 'thinking' ? ' — thinking…' : '');
+    $('reply').textContent = s.reply || '';
+    $('reply').classList.toggle('hidden', s.mode === 'input');
+    $('copy-row').classList.toggle('hidden', !(s.reply || s.mode === 'action' || s.mode === 'info'));
+    // input box stays available under every reply/error so the user can
+    // keep asking without re-pressing the hotkey. Hidden only while the
+    // model is thinking (new question would be dropped) and in action mode
+    // (confirm/cancel must be decided first).
+    $('input-row').classList.toggle('hidden', s.mode === 'thinking' || s.mode === 'action');
+    $('action-row').classList.toggle('hidden', s.mode !== 'action');
+    $('settings-row').classList.toggle('hidden', s.mode !== 'error' || !/E_PERM/.test(s.code || ''));
+    if (s.mode === 'action') {
+      $('extra').textContent =
+        s.intent === 'TYPE' ? 'Will type: "' + (s.text || '') + '"' :
+        s.intent === 'KEYS' ? 'Will press: ' + (s.keys || '') :
+        'Will click the highlighted point';
+    }
+    $('extra').classList.toggle('hidden', s.mode !== 'action');
+    if (s.mode === 'input') $('ask').focus();
+    // keep asking without the hotkey: give the box focus under the reply too
+    if (s.mode === 'info' || s.mode === 'error') $('ask').focus();
+  }
+
+  function submit() {
+    window.deskmate.submit($('ask').value);
+    $('ask').value = ''; // clear so the next question starts fresh
+  }
+  function cancel() { window.deskmate.cancel(); }
+
+  $('ask-btn').onclick = submit;
+  $('copy-btn').onclick = async () => {
+    const text = (state && state.reply) || '';
+    if (!text) return;
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch {
+      // fallback: select + execCommand (no clipboard permission in some sandboxes)
+      const r = $('reply');
+      const sel = window.getSelection();
+      const range = document.createRange();
+      range.selectNodeContents(r);
+      sel.removeAllRanges();
+      sel.addRange(range);
+      document.execCommand('copy');
+      sel.removeAllRanges();
+    }
+    $('copied').classList.remove('hidden');
+    setTimeout(() => $('copied').classList.add('hidden'), 1500);
+  };
+  $('ask').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') submit();
+    if (e.key === 'Escape') cancel();
+  });
+  $('do-btn').onclick = () => window.deskmate.confirm();
+  $('cancel-btn').onclick = cancel;
+  $('dismiss-btn').onclick = cancel;
+  $('settings-btn').onclick = () =>
+    window.deskmate.openSettings(state && state.code === 'E_PERM_AX' ? 'Privacy_Accessibility' : 'Privacy_ScreenCapture');
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') cancel(); });
+</script>
+</body>
+</html>

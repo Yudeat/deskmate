@@ -1,0 +1,277 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>deskmate — System Design</title>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: 'JetBrains Mono', monospace;
+      background: #020617;
+      min-height: 100vh;
+      padding: 2rem;
+      color: white;
+    }
+    .container { max-width: 1200px; margin: 0 auto; }
+    .header { margin-bottom: 2rem; }
+    .header-row { display: flex; align-items: center; gap: 1rem; margin-bottom: 0.5rem; }
+    .pulse-dot { width: 12px; height: 12px; background: #22d3ee; border-radius: 50%; animation: pulse 2s infinite; }
+    @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
+    h1 { font-size: 1.5rem; font-weight: 700; letter-spacing: -0.025em; }
+    .subtitle { color: #94a3b8; font-size: 0.875rem; margin-left: 1.75rem; }
+    .diagram-container {
+      background: rgba(15, 23, 42, 0.5);
+      border-radius: 1rem;
+      border: 1px solid #1e293b;
+      padding: 1.5rem;
+      overflow-x: auto;
+    }
+    svg { width: 100%; min-width: 900px; display: block; }
+    .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 1rem; margin-top: 2rem; }
+    .card {
+      background: rgba(15, 23, 42, 0.5);
+      border-radius: 0.75rem;
+      border: 1px solid #1e293b;
+      padding: 1.25rem;
+    }
+    .card-header { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.75rem; }
+    .card-dot { width: 8px; height: 8px; border-radius: 50%; }
+    .card-dot.cyan { background: #22d3ee; }
+    .card-dot.emerald { background: #34d399; }
+    .card-dot.rose { background: #fb7185; }
+    .card h3 { font-size: 0.875rem; font-weight: 600; }
+    .card ul { list-style: none; color: #94a3b8; font-size: 0.75rem; }
+    .card li { margin-bottom: 0.375rem; }
+    .footer { text-align: center; margin-top: 1.5rem; color: #475569; font-size: 0.75rem; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <div class="header-row">
+        <div class="pulse-dot"></div>
+        <h1>deskmate — System Design</h1>
+      </div>
+      <p class="subtitle">Personal desktop screen assistant — hotkey → vision → annotate/act · single user · BYOK · zero backend</p>
+    </div>
+
+    <div class="diagram-container">
+      <svg viewBox="0 0 1000 720">
+        <defs>
+          <marker id="arrowhead" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+            <polygon points="0 0, 10 3.5, 0 7" fill="#64748b" />
+          </marker>
+          <marker id="arrowheadV" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+            <polygon points="0 0, 10 3.5, 0 7" fill="#a78bfa" />
+          </marker>
+          <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
+            <path d="M 40 0 L 0 0 0 40" fill="none" stroke="#1e293b" stroke-width="0.5"/>
+          </pattern>
+        </defs>
+
+        <rect width="100%" height="100%" fill="url(#grid)" />
+
+        <!-- ============ ARROWS (behind boxes) ============ -->
+        <!-- hotkey -> permissions -->
+        <line x1="260" y1="73" x2="316" y2="73" stroke="#22d3ee" stroke-width="1.5" marker-end="url(#arrowhead)"/>
+        <text x="288" y="67" fill="#94a3b8" font-size="8" text-anchor="middle">trigger</text>
+
+        <!-- hotkey -> region (capture) -->
+        <line x1="160" y1="106" x2="160" y2="146" stroke="#22d3ee" stroke-width="1.5" marker-end="url(#arrowhead)"/>
+        <text x="170" y="132" fill="#94a3b8" font-size="8">capture</text>
+
+        <!-- region inner pipeline arrows -->
+        <line x1="220" y1="220" x2="238" y2="220" stroke="#22d3ee" stroke-width="1.5" marker-end="url(#arrowhead)"/>
+        <line x1="380" y1="220" x2="398" y2="220" stroke="#22d3ee" stroke-width="1.5" marker-end="url(#arrowhead)"/>
+        <line x1="550" y1="220" x2="568" y2="220" stroke="#22d3ee" stroke-width="1.5" marker-end="url(#arrowhead)"/>
+        <line x1="720" y1="220" x2="738" y2="220" stroke="#22d3ee" stroke-width="1.5" marker-end="url(#arrowhead)"/>
+
+        <!-- prompt -> vision providers -->
+        <line x1="645" y1="255" x2="645" y2="326" stroke="#34d399" stroke-width="1.5" marker-end="url(#arrowhead)"/>
+        <text x="653" y="310" fill="#94a3b8" font-size="8">HTTPS / localhost:11434</text>
+
+        <!-- jsonfix -> dispatch row -->
+        <line x1="760" y1="255" x2="760" y2="436" stroke="#22d3ee" stroke-width="1.5" marker-end="url(#arrowhead)"/>
+        <text x="772" y="270" fill="#94a3b8" font-size="8">dispatch</text>
+
+        <!-- memory tail -> memory.jsonl (append) -->
+        <path d="M 490 255 L 490 330 Q 490 450 640 450 L 776 450" fill="none" stroke="#a78bfa" stroke-width="1.5" stroke-dasharray="5,3" marker-end="url(#arrowheadV)"/>
+        <text x="606" y="443" fill="#a78bfa" font-size="8">append + tail → prompt</text>
+
+        <!-- ============ REGION BOUNDARY ============ -->
+        <rect x="40" y="150" width="920" height="150" rx="12" fill="rgba(8, 51, 68, 0.06)" stroke="#22d3ee" stroke-width="1" stroke-dasharray="6,3"/>
+        <text x="52" y="166" fill="#22d3ee" font-size="10" font-weight="600">ELECTRON MAIN PROCESS</text>
+        <text x="52" y="180" fill="#94a3b8" font-size="8">Node.js · zero bundler · one async handleTrigger() · no orchestrator, no state engine</text>
+
+        <!-- ============ ROW 1: TRIGGER ============ -->
+        <rect x="60" y="40" width="200" height="66" rx="6" fill="#0f172a"/>
+        <rect x="60" y="40" width="200" height="66" rx="6" fill="rgba(8, 51, 68, 0.4)" stroke="#22d3ee" stroke-width="1.5"/>
+        <text x="160" y="58" fill="white" font-size="11" font-weight="600" text-anchor="middle">Global Hotkey</text>
+        <text x="160" y="74" fill="#94a3b8" font-size="9" text-anchor="middle">Cmd + Shift + Space</text>
+        <text x="160" y="90" fill="#22d3ee" font-size="8" text-anchor="middle">globalShortcut (Electron)</text>
+
+        <rect x="320" y="40" width="260" height="66" rx="6" fill="#0f172a"/>
+        <rect x="320" y="40" width="260" height="66" rx="6" fill="rgba(136, 19, 55, 0.4)" stroke="#fb7185" stroke-width="1.5"/>
+        <text x="450" y="58" fill="white" font-size="11" font-weight="600" text-anchor="middle">Permissions Gate</text>
+        <text x="450" y="74" fill="#94a3b8" font-size="9" text-anchor="middle">Screen Recording + Accessibility</text>
+        <text x="450" y="90" fill="#fb7185" font-size="8" text-anchor="middle">startup self-check · fail loudly, never silently</text>
+
+        <!-- ============ REGION INNER: PIPELINE ============ -->
+        <rect x="70" y="185" width="150" height="70" rx="6" fill="#0f172a"/>
+        <rect x="70" y="185" width="150" height="70" rx="6" fill="rgba(8, 51, 68, 0.4)" stroke="#22d3ee" stroke-width="1.5"/>
+        <text x="145" y="205" fill="white" font-size="10" font-weight="600" text-anchor="middle">Capture + Downscale</text>
+        <text x="145" y="221" fill="#94a3b8" font-size="9" text-anchor="middle">desktopCapturer</text>
+        <text x="145" y="236" fill="#94a3b8" font-size="8" text-anchor="middle">thumbnailSize → 1080p</text>
+
+        <rect x="240" y="185" width="140" height="70" rx="6" fill="#0f172a"/>
+        <rect x="240" y="185" width="140" height="70" rx="6" fill="rgba(8, 51, 68, 0.4)" stroke="#22d3ee" stroke-width="1.5"/>
+        <text x="310" y="205" fill="white" font-size="10" font-weight="600" text-anchor="middle">Encode</text>
+        <text x="310" y="221" fill="#94a3b8" font-size="9" text-anchor="middle">JPEG q75</text>
+        <text x="310" y="236" fill="#94a3b8" font-size="8" text-anchor="middle">→ base64 (~300KB)</text>
+
+        <rect x="400" y="185" width="150" height="70" rx="6" fill="#0f172a"/>
+        <rect x="400" y="185" width="150" height="70" rx="6" fill="rgba(8, 51, 68, 0.4)" stroke="#22d3ee" stroke-width="1.5"/>
+        <text x="475" y="205" fill="white" font-size="10" font-weight="600" text-anchor="middle">Memory Tail</text>
+        <text x="475" y="221" fill="#94a3b8" font-size="9" text-anchor="middle">last 20 entries</text>
+        <text x="475" y="236" fill="#94a3b8" font-size="8" text-anchor="middle">from JSONL log</text>
+
+        <rect x="570" y="185" width="150" height="70" rx="6" fill="#0f172a"/>
+        <rect x="570" y="185" width="150" height="70" rx="6" fill="rgba(8, 51, 68, 0.4)" stroke="#22d3ee" stroke-width="1.5"/>
+        <text x="645" y="205" fill="white" font-size="10" font-weight="600" text-anchor="middle">Prompt + Image</text>
+        <text x="645" y="221" fill="#94a3b8" font-size="9" text-anchor="middle">JSON-only schema</text>
+        <text x="645" y="236" fill="#94a3b8" font-size="8" text-anchor="middle">context = memory tail</text>
+
+        <rect x="740" y="185" width="160" height="70" rx="6" fill="#0f172a"/>
+        <rect x="740" y="185" width="160" height="70" rx="6" fill="rgba(8, 51, 68, 0.4)" stroke="#22d3ee" stroke-width="1.5"/>
+        <text x="820" y="205" fill="white" font-size="10" font-weight="600" text-anchor="middle">jsonfix</text>
+        <text x="820" y="221" fill="#94a3b8" font-size="9" text-anchor="middle">parse + recover</text>
+        <text x="820" y="236" fill="#94a3b8" font-size="8" text-anchor="middle">valid JSON from LLM output</text>
+
+        <!-- ============ VISION PROVIDERS ============ -->
+        <rect x="80" y="330" width="180" height="70" rx="6" fill="#0f172a"/>
+        <rect x="80" y="330" width="180" height="70" rx="6" fill="rgba(6, 78, 59, 0.4)" stroke="#34d399" stroke-width="1.5"/>
+        <text x="170" y="352" fill="white" font-size="11" font-weight="600" text-anchor="middle">Gemini 2.5 Flash</text>
+        <text x="170" y="368" fill="#94a3b8" font-size="9" text-anchor="middle">free tier · BYOK</text>
+        <text x="170" y="383" fill="#34d399" font-size="8" text-anchor="middle">cloud · primary</text>
+
+        <rect x="300" y="330" width="180" height="70" rx="6" fill="#0f172a"/>
+        <rect x="300" y="330" width="180" height="70" rx="6" fill="rgba(6, 78, 59, 0.4)" stroke="#34d399" stroke-width="1.5"/>
+        <text x="390" y="352" fill="white" font-size="11" font-weight="600" text-anchor="middle">Groq · vision</text>
+        <text x="390" y="368" fill="#94a3b8" font-size="9" text-anchor="middle">free tier · BYOK</text>
+        <text x="390" y="383" fill="#34d399" font-size="8" text-anchor="middle">cloud · fallback</text>
+
+        <rect x="520" y="330" width="180" height="70" rx="6" fill="#0f172a"/>
+        <rect x="520" y="330" width="180" height="70" rx="6" fill="rgba(6, 78, 59, 0.4)" stroke="#34d399" stroke-width="1.5"/>
+        <text x="610" y="352" fill="white" font-size="11" font-weight="600" text-anchor="middle">Ollama (local)</text>
+        <text x="610" y="368" fill="#94a3b8" font-size="9" text-anchor="middle">minicpm-v / llama3.2-vision</text>
+        <text x="610" y="383" fill="#34d399" font-size="8" text-anchor="middle">offline · localhost:11434 · BYOK = no key</text>
+
+        <!-- ============ STORAGE ============ -->
+        <rect x="780" y="420" width="190" height="60" rx="6" fill="#0f172a"/>
+        <rect x="780" y="420" width="190" height="60" rx="6" fill="rgba(76, 29, 149, 0.4)" stroke="#a78bfa" stroke-width="1.5"/>
+        <text x="875" y="444" fill="white" font-size="11" font-weight="600" text-anchor="middle">memory.jsonl</text>
+        <text x="875" y="460" fill="#94a3b8" font-size="9" text-anchor="middle">~/.deskmate/ · append-only</text>
+        <text x="875" y="474" fill="#a78bfa" font-size="8" text-anchor="middle">no DB · no vector store</text>
+
+        <!-- ============ DISPATCH / RENDER / EXECUTE ============ -->
+        <rect x="60" y="440" width="215" height="90" rx="6" fill="#0f172a"/>
+        <rect x="60" y="440" width="215" height="90" rx="6" fill="rgba(8, 51, 68, 0.4)" stroke="#22d3ee" stroke-width="1.5"/>
+        <text x="167" y="462" fill="white" font-size="11" font-weight="600" text-anchor="middle">Overlay Window</text>
+        <text x="167" y="480" fill="#94a3b8" font-size="9" text-anchor="middle">transparent · click-through</text>
+        <text x="167" y="496" fill="#22d3ee" font-size="8" text-anchor="middle">SVG ring + label · CSS fade</text>
+        <text x="167" y="512" fill="#94a3b8" font-size="8" text-anchor="middle">no GSAP · no canvas</text>
+
+        <rect x="295" y="440" width="215" height="90" rx="6" fill="#0f172a"/>
+        <rect x="295" y="440" width="215" height="90" rx="6" fill="rgba(8, 51, 68, 0.4)" stroke="#22d3ee" stroke-width="1.5"/>
+        <text x="402" y="462" fill="white" font-size="11" font-weight="600" text-anchor="middle">Panel Window</text>
+        <text x="402" y="480" fill="#94a3b8" font-size="9" text-anchor="middle">reply text · [Do it] [Cancel]</text>
+        <text x="402" y="496" fill="#22d3ee" font-size="8" text-anchor="middle">frameless · always-on-top</text>
+        <text x="402" y="512" fill="#94a3b8" font-size="8" text-anchor="middle">confirm before act</text>
+
+        <rect x="530" y="440" width="215" height="90" rx="6" fill="#0f172a"/>
+        <rect x="530" y="440" width="215" height="90" rx="6" fill="rgba(6, 78, 59, 0.4)" stroke="#34d399" stroke-width="1.5"/>
+        <text x="637" y="462" fill="white" font-size="11" font-weight="600" text-anchor="middle">Executor</text>
+        <text x="637" y="480" fill="#94a3b8" font-size="9" text-anchor="middle">AppleScript → System Events</text>
+        <text x="637" y="496" fill="#34d399" font-size="8" text-anchor="middle">CLICK · TYPE · KEYS</text>
+        <text x="637" y="512" fill="#94a3b8" font-size="8" text-anchor="middle">zero deps · one swap point</text>
+
+        <!-- ============ LEGEND ============ -->
+        <text x="730" y="590" fill="white" font-size="10" font-weight="600">Legend</text>
+
+        <rect x="730" y="602" width="16" height="10" rx="2" fill="rgba(8, 51, 68, 0.4)" stroke="#22d3ee" stroke-width="1"/>
+        <text x="752" y="610" fill="#94a3b8" font-size="8">Frontend — app windows</text>
+
+        <rect x="730" y="620" width="16" height="10" rx="2" fill="rgba(6, 78, 59, 0.4)" stroke="#34d399" stroke-width="1"/>
+        <text x="752" y="628" fill="#94a3b8" font-size="8">Backend — vision · executor</text>
+
+        <rect x="730" y="638" width="16" height="10" rx="2" fill="rgba(76, 29, 149, 0.4)" stroke="#a78bfa" stroke-width="1"/>
+        <text x="752" y="646" fill="#94a3b8" font-size="8">Storage — JSONL memory</text>
+
+        <rect x="730" y="656" width="16" height="10" rx="2" fill="rgba(136, 19, 55, 0.4)" stroke="#fb7185" stroke-width="1"/>
+        <text x="752" y="664" fill="#94a3b8" font-size="8">Security — permissions</text>
+
+        <line x1="730" y1="680" x2="746" y2="680" stroke="#64748b" stroke-width="1.5" marker-end="url(#arrowhead)"/>
+        <text x="752" y="683" fill="#94a3b8" font-size="8">call / data flow</text>
+
+        <line x1="730" y1="700" x2="746" y2="700" stroke="#a78bfa" stroke-width="1.5" stroke-dasharray="5,3"/>
+        <text x="752" y="703" fill="#94a3b8" font-size="8">append / read</text>
+      </svg>
+    </div>
+
+    <div class="cards">
+      <div class="card">
+        <div class="card-header">
+          <div class="card-dot cyan"></div>
+          <h3>What to use — v1 practices</h3>
+        </div>
+        <ul>
+          <li>• Event-driven capture: only on hotkey, never continuous</li>
+          <li>• Per-display 0–1000 relative coords × DIP bounds (kills mixed-DPI drift)</li>
+          <li>• thumbnailSize=1080: downscale for free, no resize code</li>
+          <li>• BYOK: config.json, 3 providers, one JSON-only prompt</li>
+          <li>• JSONL memory: append + tail 20 — no DB, no embeddings</li>
+          <li>• Fail loud: permission self-check at startup</li>
+          <li>• One stdlib test file for jsonfix (node:test + assert)</li>
+        </ul>
+      </div>
+
+      <div class="card">
+        <div class="card-header">
+          <div class="card-dot rose"></div>
+          <h3>What NOT to do</h3>
+        </div>
+        <ul>
+          <li>• ✗ Continuous / screen-delta screenshots → rate limits, latency</li>
+          <li>• ✗ Vector DB / embeddings for personal memory — overkill</li>
+          <li>• ✗ GSAP or canvas for a bounding box — SVG + CSS fade is enough</li>
+          <li>• ✗ n8n / Flowise / workflow servers in v1</li>
+          <li>• ✗ Three execution engines — one AppleScript path</li>
+          <li>• ✗ Trusting raw LLM pixels — confirm before CLICK/TYPE</li>
+          <li>• ✗ Absolute pixel coords across monitors — always per-display fractional</li>
+        </ul>
+      </div>
+
+      <div class="card">
+        <div class="card-header">
+          <div class="card-dot emerald"></div>
+          <h3>Latency budget &amp; stack</h3>
+        </div>
+        <ul>
+          <li>• Hotkey → annotation on screen: ~1.5–3s</li>
+          <li>• capture+encode ~150ms · vision 1–2.5s · parse+render &lt;50ms</li>
+          <li>• Electron, plain Node — no bundler, ~15 files</li>
+          <li>• Gemini 2.5 Flash primary · Groq / Ollama fallback</li>
+          <li>• Phase 2 voice: say + whisper.cpp (Web Speech ≈ broken on WKWebView)</li>
+          <li>• OSS later: Electron = biggest contributor pool; backend files port to Tauri unchanged if ever needed</li>
+        </ul>
+      </div>
+    </div>
+
+    <p class="footer">
+      deskmate v1 · single user · BYOK · zero backend · macOS
+    </p>
+  </div>
+</body>
+</html>

@@ -1,0 +1,14 @@
+{
+  "name": "deskmate",
+  "version": "0.1.0",
+  "description": "Personal macOS screen assistant - hotkey, vision, annotate, act. BYOK, zero backend.",
+  "main": "src/main.js",
+  "private": true,
+  "scripts": {
+    "start": "electron .",
+    "test": "node --test test/"
+  },
+  "devDependencies": {
+    "electron": "^44.3.0"
+  }
+}

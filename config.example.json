@@ -1,0 +1,10 @@
+{
+  "hotkey": "Cmd+Shift+Space",
+  "provider": "gemini",
+  "model": "gemini-3.6-flash",
+  "apiKey": "PASTE_YOUR_KEY_HERE",
+  "memoryEnabled": true,
+  "memoryTail": 20,
+  "memoryPath": "~/.deskmate/memory.jsonl",
+  "overlayMs": 6000
+}
