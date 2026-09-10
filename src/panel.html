@@ -2,20 +2,22 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
+<title>deskmate</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <style>
   :root { color-scheme: light; }
   * { margin: 0; padding: 0; box-sizing: border-box; }
   body {
     font: 13px/1.5 -apple-system, "SF Mono", Menlo, monospace;
     background: #fff8f4; color: #4a3f38;
-    border: 1px solid #f0e2d8; border-radius: 12px; overflow: hidden; user-select: none;
+    border: 1px solid #f0e2d8; border-radius: 12px; overflow: hidden; user-select: none; -webkit-user-select: none;
   }
   .wrap { padding: 14px 16px; }
   h1 { font-size: 11px; font-weight: 600; color: #d97a42; margin-bottom: 8px;
        letter-spacing: 0.08em; text-transform: uppercase; }
   #reply { white-space: pre-wrap; word-break: break-word; max-height: 110px;
-           overflow-y: auto; margin-bottom: 10px; user-select: text; }
-  #extra { color: #8a7a70; font-size: 12px; margin-bottom: 10px; word-break: break-word; user-select: text; }
+           overflow-y: auto; margin-bottom: 10px; user-select: text; -webkit-user-select: text; }
+  #extra { color: #8a7a70; font-size: 12px; margin-bottom: 10px; word-break: break-word; user-select: text; -webkit-user-select: text; }
   #copy-row { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
   #copied { color: #4a7c59; font-size: 11px; }
   .row { display: flex; gap: 8px; }
