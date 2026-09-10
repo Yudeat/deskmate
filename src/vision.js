@@ -6,7 +6,7 @@ function build(cfg, request, b64, mime, mem) {
   const prompt = `${SYSTEM}\n\n${buildUserPrompt(request, mem)}`;
   switch (cfg.provider) {
     case 'gemini': {
-      const model = cfg.model || 'gemini-2.5-flash';
+      const model = cfg.model || 'gemini-3.6-flash';
       return {
         url: `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(cfg.apiKey)}`,
         headers: { 'Content-Type': 'application/json' },

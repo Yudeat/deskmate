@@ -34,8 +34,11 @@ const WEB = {
 // ---- windows ----
 
 function closePanel() {
-  if (panelWin && !panelWin.isDestroyed()) panelWin.close();
-  panelWin = null;
+  if (panelWin && !panelWin.isDestroyed()) {
+    const w = panelWin;
+    panelWin = null;   // clear ref first: no re-entry into this handler
+    w.close();
+  }
   panelPending = null;
 }
 
@@ -143,7 +146,10 @@ async function runPipeline(request, opts = {}) {
     const parsed = jsonfix.parse(raw);
 
     lastDisplay = display;
-    pendingAction = parsed;
+    // Only a fresh question (no continuation opts) sets the pending action.
+    // Continuations render their own next step; clobbering it here would
+    // let a mid-task answer overwrite an unconfirmed action.
+    if (!opts.onParsed) pendingAction = parsed;
 
     try {
       const appName = await exec.frontmostApp();
@@ -199,7 +205,10 @@ async function executeAction(p) {
     case 'CLICK': return exec.clickAt(b.x + (p.x / 1000) * b.width, b.y + (p.y / 1000) * b.height);
     case 'TYPE': return exec.typeText(p.text);
     case 'KEYS': return exec.pressKeys(p.keys);
-    default: return;
+    default:
+      // Non-action intents (HIGHLIGHT/ANSWER) should never reach execution;
+      // if one does (race/corrupt state), fail loudly instead of "succeeding".
+      throw Object.assign(new Error(`cannot execute intent "${p.intent}"`), { code: 'E_EXEC' });
   }
 }
 
@@ -234,13 +243,28 @@ function continueTask(prev, retry) {
     ? 'You must propose exactly ONE next action as CLICK, TYPE, or KEYS with real x,y coordinates (0-1000). No prose-only replies.'
     : `Continue the task: ${prev.reply || ''} — You already acted on the screen. Look at the CURRENT screen: did the action work? If the task is done, set taskComplete=true. Otherwise propose exactly one next action (CLICK/TYPE/KEYS) with x,y.`;
   showPanel({ mode: 'thinking', reply: 'Checking…' });
+  // continuation keeps the panel quiet (no full renderResult) and routes
+  // the parsed result straight to the panel + loop, not through the
+  // full result renderer (which would double-render).
   runPipeline(q, {
     step: stepCount,
     onParsed: (parsed) => {
-      if (!parsed.taskComplete && !['CLICK', 'TYPE', 'KEYS'].includes(parsed.intent) && retry < 1) {
-        // model talked instead of acting — force a concrete next step once
-        continueTask(prev, 1);
+      if (parsed.taskComplete) {
+        stepCount = 0; lastActionKey = null; lastActionRepeats = 0;
+        showPanel({ mode: 'info', reply: parsed.reply || 'Done.' });
+        return;
       }
+      if (['CLICK', 'TYPE', 'KEYS'].includes(parsed.intent)) {
+        pendingAction = parsed;
+        showPanel({ mode: 'action', intent: parsed.intent, reply: parsed.reply || `I'll ${parsed.intent.toLowerCase()} on your screen.`, text: parsed.text, keys: parsed.keys });
+        return;
+      }
+      if (parsed.intent === 'ANSWER') {
+        showPanel({ mode: 'info', reply: parsed.reply || '' });
+        return;
+      }
+      // HIGHLIGHT or prose-dodge: force a concrete next step once
+      if (retry < 1) continueTask(prev, 1);
     },
   });
 }
