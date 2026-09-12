@@ -15,6 +15,11 @@ const DEFAULTS = {
   memoryPath: '~/.deskmate/memory.jsonl',
   overlayMs: 6000,
   ttsEnabled: true,
+  wakeEnabled: true,
+  wakeWord: 'yudeat',
+  wakeModel: '/opt/homebrew/share/whisper.cpp/models/ggml-base.en.bin',
+  wakeCapture: 1,
+  wakeCommandMs: 6000,
 };
 
 function configPath() {

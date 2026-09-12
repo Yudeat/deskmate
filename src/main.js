@@ -9,6 +9,7 @@ const memory = require('./memory');
 const jsonfix = require('./jsonfix');
 const { infer, transcribe } = require('./vision');
 const exec = require('./exec');
+const { startWake } = require('./wake');
 
 let cfg = null;
 let panelWin = null;
@@ -265,21 +266,23 @@ function autoStop() {
   if (!voiceActive) return;
   voiceActive = false;
   stopRecording();
-  busy = false;
-  flushVoice();
+  flushVoice(); // sets busy itself; flushes + runs the pipeline
 }
 
 // Shared voice path: button + hotkey both route here. Transcribe the last
 // recording and run it through the same pipeline as a typed question.
 async function flushVoice() {
+  busy = true; // hold busy through transcribe+run so a hotkey press mid-flight can't re-trigger
   try {
     const wav = require('node:fs').readFileSync(REC);
-    if (!wav.length) return; // nothing said / TCC-blocked: stay quiet, don't error
+    if (!wav.length) { busy = false; return; } // nothing said / TCC-blocked: stay quiet, don't error
     showPanel({ mode: 'thinking', reply: 'Working…' });
     const text = await transcribe(cfg, wav);
-    if (text) runPipeline(text, {});
+    if (text) await runPipeline(text, {});
   } catch (e) {
     renderError(e);
+  } finally {
+    busy = false;
   }
 }
 
@@ -402,8 +405,6 @@ function onHotkey() {
   busy = true; // block re-entry while recording
 }
 
-let voiceActive = false;
-
 if (!app.requestSingleInstanceLock()) {
   app.quit();
 } else {
@@ -425,6 +426,21 @@ if (!app.requestSingleInstanceLock()) {
       cfg = loadConfig();
       const ok = globalShortcut.register(cfg.hotkey, onHotkey);
       if (!ok) console.error('hotkey registration failed:', cfg.hotkey);
+      // Siri-style wake loop: "hey yudeat" → command → answer.
+      // Skip in smoke mode (no mic, no app loop).
+      if (cfg.wakeEnabled && !process.env.DESKMATE_SMOKE) {
+        let wakeStop = null;
+        try {
+          wakeStop = startWake((line) => {
+            if (busy) return; // don't stack commands over an in-flight one
+            showPanel({ mode: 'thinking', reply: 'Working…' });
+            runPipeline(String(line || ''));
+          }, cfg);
+        } catch (e) {
+          console.error('wake:', e.message);
+        }
+        app.on('will-quit', () => { if (wakeStop) wakeStop(); });
+      }
     } catch (e) {
       console.error('config:', e.message);
       renderError(e);
