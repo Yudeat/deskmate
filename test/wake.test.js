@@ -19,10 +19,10 @@ function run(lines, initialAwake = false) {
   return { state, events };
 }
 
-test('asleep: wake word + command fires ack and command', () => {
+test('asleep: wake word + command fires command only (ack skipped when command present)', () => {
   const { state, events } = run(['deskmate what is the time']);
   assert.equal(state.awake, true);
-  assert.deepEqual(events, ['ACK', 'CMD:what is the time']);
+  assert.deepEqual(events, ['CMD:what is the time']);
 });
 
 test('asleep: bare speech is ignored (no wake word)', () => {
@@ -58,10 +58,16 @@ test('asleep: wake word then next line command', () => {
 test('fuzzy: Descmate (typo) still wakes', () => {
   const { state, events } = run(['Descmate, what is the time?']);
   assert.equal(state.awake, true);
-  assert.deepEqual(events, ['ACK', 'CMD:what is the time?']);
+  assert.deepEqual(events, ['CMD:what is the time?']);
 });
 
 test('wake word stripped from mid-sentence usage', () => {
   const { state, events } = run(['deskmate can you open safari']);
-  assert.deepEqual(events, ['ACK', 'CMD:can you open safari']);
+  assert.deepEqual(events, ['CMD:can you open safari']);
+});
+
+test('bare wake word still acks (no command)', () => {
+  const { state, events } = run(['deskmate']);
+  assert.equal(state.awake, true);
+  assert.deepEqual(events, ['ACK']);
 });

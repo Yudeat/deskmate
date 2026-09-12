@@ -156,6 +156,7 @@ function needsScreen(request) {
 async function runPipeline(request, opts = {}) {
   const step = opts.step || 0;
   busy = true;
+  console.error(`[pipeline] start req=${JSON.stringify(String(request || '').slice(0, 80))}`);
   try {
     cfg = loadConfig();
     const mem = cfg.memoryEnabled ? await memory.tail(cfg.memoryPath, cfg.memoryTail) : [];
@@ -163,7 +164,7 @@ async function runPipeline(request, opts = {}) {
     if (!needsScreen(request)) {
       // research path: no screenshot. Search + text LLM answer.
       showPanel({ mode: 'thinking', reply: 'Researching…' });
-      const results = await research.search(request);
+      const results = await search(request);
       const raw = await researchAnswer(cfg, request, results);
       const parsed = jsonfix.parse(raw);
       lastDisplay = null;
@@ -228,6 +229,7 @@ const ERR_HINTS = {
 };
 
 function renderError(e) {
+  console.error(`[error] ${e.code || 'E_UNKNOWN'}: ${String(e.message).slice(0, 200)}`);
   const hint = ERR_HINTS[e.code] || 'Unexpected error.';
   const detail = e.message && e.message !== hint ? `\n\n${e.message}` : '';
   showPanel({ mode: 'error', code: e.code, reply: hint + detail });

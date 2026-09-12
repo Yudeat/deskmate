@@ -65,6 +65,7 @@ function startWake(onCommand, cfg, onWake, onSleep) {
         const raw = buf.slice(0, i).replace(/\x1b\[2K/g, '').replace(/\r/g, '').trim();
         buf = buf.slice(i + 1);
         if (!raw || raw.includes('[BLANK_AUDIO]')) continue;
+        console.error(`[wake] ${awake ? 'awake' : 'asleep'} heard: ${JSON.stringify(raw)}`);
         handleLine(raw);
       }
     });
@@ -129,7 +130,10 @@ function classify({ awake }, line, matcher, events) {
 
   if (wake) {
     const cmd = line.slice(wake.idx + wake.word.length).trim().replace(/^[,\s]+/, '').trim();
-    if (events.awake) events.awake();
+    // Ack only when there's no command in this line — if a command follows,
+    // speaking now would echo into the mic and the echo guard would drop the
+    // real command (we saw this: "Yo" ack raced the command transcription).
+    if (!cmd && events.awake) events.awake();
     if (cmd && events.command) events.command(cmd);
     return { awake: true };
   }
