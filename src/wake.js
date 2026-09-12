@@ -1,39 +1,65 @@
 'use strict';
 const { spawn } = require('node:child_process');
+const exec = require('./exec');
 
 // Wake-word listener: runs whisper-stream (continuous mic transcription)
-// and fuzzy-matches the user's wake word against the stream. On match, the
-// text AFTER the wake word is the command. whisper tiny/base mishear unusual
-// words ("yudeat" -> "judy", "you'd eat", "yudhi"), so we match on a list of
-// likely acoustic spellings rather than an exact string. The matcher is
-// deliberately loose — false positives just show the panel; false negatives
-// would kill the feature.
+// and routes speech through a small state machine.
+//
+// States:
+//   asleep (default) — only the wake word ("deskmate") activates. Bare
+//                      speech is ignored.
+//   awake            — every spoken line is a command; the wake word is
+//                      stripped if present. "sleep" / "go to sleep" /
+//                      "deskmate sleep" → back to asleep with a "Bye" ack.
+//
+// One whisper daemon serves both states — the same stream feeds the
+// state machine, so there's no second process and no gap when switching.
+//
+// The matcher is deliberately loose (edit-distance ≤1 + common acoustic
+// spellings) — false positives just show the panel; false negatives kill
+// the feature. The classifier is pure (see classify below) so it's
+// unit-testable without a mic.
 
 function buildMatcher(wakeWord) {
-  const w = (wakeWord || 'yudeat').toLowerCase();
-  // acoustic variants of the wake word (tiny/base model mishearings)
-  const variants = [w, 'judy', 'judi', 'yudhi', 'yudi', "you'd eat", 'yoo dee at', 'yudeat', 'yud eat', 'yudit'];
-  const sorted = variants.sort((a, b) => b.length - a.length);
-  return sorted; // longest-first so "you'd eat" beats "you"
+  const w = (wakeWord || 'deskmate').toLowerCase();
+  // Acoustic/typo variants. The model has produced "Deskmate" AND
+  // "Descmate" (missing k), so exact variants + fuzzy edit-distance-1.
+  const exact = [w, 'desk mate', 'deskmat', 'desk mat', 'thanks mate', 'thanx mate', 'thanks, mate', 'thanksmate'];
+  const sorted = exact.sort((a, b) => b.length - a.length);
+  return { list: sorted, fuzzy: w };
 }
 
-function startWake(onCommand, cfg) {
+// Levenshtein distance ≤1: catches descmate, deskmat, etc. cheaply.
+function dist1(a, b) {
+  if (Math.abs(a.length - b.length) > 1) return false;
+  let i = 0, j = 0, edits = 0;
+  while (i < a.length && j < b.length) {
+    if (a[i] === b[j]) { i++; j++; }
+    else {
+      if (++edits > 1) return false;
+      if (a.length > b.length) i++;
+      else if (b.length > a.length) j++;
+      else { i++; j++; }
+    }
+  }
+  return edits + (a.length - i) + (b.length - j) <= 1;
+}
+
+const SLEEP_PHRASES = ['sleep', 'go to sleep', 'time to sleep', 'sleep deskmate', 'deskmate sleep', 'go to sleep deskmate', 'sleep now', 'deskmate go to sleep'];
+
+function startWake(onCommand, cfg, onWake, onSleep) {
   const bin = cfg.wakeBin || 'whisper-stream';
   const model = cfg.wakeModel || '/opt/homebrew/share/whisper.cpp/models/ggml-base.en.bin';
   const matcher = buildMatcher(cfg.wakeWord);
-  const args = ['-m', model, '-l', 'en', '-c', String(cfg.wakeCapture || 1), '--step', '3000', '--length', '4000', '-vth', '0.6'];
+  const args = ['-m', model, '-l', 'en', '-c', String(cfg.wakeCapture || 1), '--step', '3000', '--length', '4000', '--keep', '1500', '-vth', '0.3'];
   let proc = null;
   let buf = '';
-  let active = false; // true after wake: accumulate command until silence
+  let awake = false; // state machine: asleep until wake word or hotkey
 
   const spawnOnce = () => {
     proc = spawn(bin, args, { stdio: ['ignore', 'pipe', 'inherit'] });
     proc.stdout.on('data', (d) => {
       buf += d.toString();
-      // whisper-stream output: blocks like "\x1b[2K\r [BLANK_AUDIO]\n" or
-      // "\x1b[2K\r You'd eat tell me today's date.\n". Split on newlines,
-      // strip the ANSI erase-line code (\x1b[2K) + \r, match the last text
-      // block. BLANK_AUDIO = silence.
       let i;
       while ((i = buf.indexOf('\n')) >= 0) {
         const raw = buf.slice(0, i).replace(/\x1b\[2K/g, '').replace(/\r/g, '').trim();
@@ -50,40 +76,86 @@ function startWake(onCommand, cfg) {
   };
 
   const handleLine = (line) => {
-    const lower = line.toLowerCase();
-    // wake word found: extract the command that follows it
-    for (const v of matcher) {
-      const idx = lower.indexOf(v);
-      if (idx >= 0) {
-        const cmd = line.slice(idx + v.length).trim().replace(/^[,.\s]+/, '').trim();
-        if (cmd) {
-          onCommand(cmd);
-        } else {
-          active = true; // wake heard, command pending
-        }
-        return;
-      }
-    }
-    // if we're in command-accumulate mode, append (multi-line commands)
-    if (active && line) {
-      active = false;
-      onCommand(line);
-    }
+    // Echo guard: while TTS is speaking, the mic picks up the reply and
+    // whisper would transcribe it as a new command — infinite loop. Drop
+    // anything heard during speech (we saw "Yeah. Yeah." echoes in logs).
+    if (exec.isSpeaking()) return;
+    const events = {
+      awake: () => { if (onWake) onWake(); },
+      sleep: () => { if (onSleep) onSleep(); },
+      command: (cmd) => onCommand(cmd),
+    };
+    const next = classify({ awake }, line, matcher, events);
+    awake = next.awake;
   };
 
   spawnOnce();
-  return () => { if (proc) { try { proc.kill(); } catch {} proc = null; } };
+  return {
+    stop: () => { if (proc) { try { proc.kill(); } catch {} proc = null; } },
+    setState: (v) => { awake = v; }, // hotkey can wake us without saying the word
+  };
 }
 
-module.exports = { startWake, buildMatcher };
+module.exports = { startWake, buildMatcher, SLEEP_PHRASES, classify };
 
-// self-check: the fuzzy matcher catches the misheard variants
+// Pure state machine — testable without a mic/whisper. Takes the current
+// state and a transcribed line; returns the next state + fires callbacks.
+//   state: { awake: bool }
+//   line: whispered text
+//   matcher: buildMatcher() result
+//   events: { awake, sleep, command } called synchronously
+function classify({ awake }, line, matcher, events) {
+  const lower = line.toLowerCase();
+  const sleepPhrase = SLEEP_PHRASES.find((p) => lower.includes(p));
+  const wake = (() => {
+    for (const v of matcher.list) {
+      const idx = lower.indexOf(v);
+      if (idx >= 0) return { word: v, idx };
+    }
+    const words = lower.split(/[^a-z']+/).filter(Boolean);
+    for (const word of words) {
+      if (dist1(word, matcher.fuzzy)) return { word, idx: lower.indexOf(word) };
+    }
+    return null;
+  })();
+
+  if (sleepPhrase) {
+    if (awake || wake) {
+      if (events.sleep) events.sleep();
+      return { awake: false };
+    }
+    return { awake };
+  }
+
+  if (wake) {
+    const cmd = line.slice(wake.idx + wake.word.length).trim().replace(/^[,\s]+/, '').trim();
+    if (events.awake) events.awake();
+    if (cmd && events.command) events.command(cmd);
+    return { awake: true };
+  }
+
+  if (awake && line.trim()) {
+    const cmd = line.trim().replace(/^[,\s]+/, '').trim();
+    if (cmd && events.command) events.command(cmd);
+  }
+  return { awake };
+}
+
+// self-check: exact + fuzzy matcher catches variants
 if (require.main === module) {
-  const m = buildMatcher('yudeat');
-  const cases = ['judy tell me today\'s date', "you'd eat, tell me today's day", 'yudhi open safari'];
+  const m = buildMatcher('deskmate');
+  const cases = ['deskmate tell me today\'s date', 'Descmate, what is the time?', 'desk mate, open safari', 'thanks mate open safari', 'deskmate sleep', 'go to sleep', 'deskmate can you play a song', 'can you play a song'];
   for (const c of cases) {
     const lower = c.toLowerCase();
-    const hit = m.find((v) => lower.includes(v));
+    let hit = null;
+    for (const v of m.list) {
+      const idx = lower.indexOf(v);
+      if (idx >= 0) { hit = v; break; }
+    }
+    if (!hit) {
+      const word = lower.split(/[^a-z']+/).find((w) => w && dist1(w, m.fuzzy));
+      if (word) hit = word;
+    }
     const cmd = hit ? c.slice(lower.indexOf(hit) + hit.length).trim() : '';
     console.log(JSON.stringify({ in: c, hit, cmd }));
   }

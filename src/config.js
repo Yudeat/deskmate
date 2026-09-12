@@ -16,7 +16,7 @@ const DEFAULTS = {
   overlayMs: 6000,
   ttsEnabled: true,
   wakeEnabled: true,
-  wakeWord: 'yudeat',
+  wakeWord: 'deskmate',
   wakeModel: '/opt/homebrew/share/whisper.cpp/models/ggml-base.en.bin',
   wakeCapture: 1,
   wakeCommandMs: 6000,

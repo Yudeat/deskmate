@@ -7,9 +7,10 @@ const { spawn } = require('node:child_process');
 const { loadConfig } = require('./config');
 const memory = require('./memory');
 const jsonfix = require('./jsonfix');
-const { infer, transcribe } = require('./vision');
+const { infer, transcribe, researchAnswer } = require('./vision');
 const exec = require('./exec');
 const { startWake } = require('./wake');
+const { search } = require('./research');
 
 let cfg = null;
 let panelWin = null;
@@ -137,13 +138,47 @@ async function captureScreen() {
 
 // ---- pipeline ----
 
+// Decide: does the request need the screen, or is it a world/general question?
+// Screen words → capture + vision. World words → research + text LLM.
+// Ambiguous → screen (current behavior, safe default). Heuristic, not a model
+// call — zero extra latency. (ponytail: keyword lists; a classifier could
+// replace this if it misroutes in practice.)
+const SCREEN_WORDS = ['screen', 'screenshot', 'desktop', 'window', 'app', 'click', 'open', 'type', 'file', 'folder', 'tab', 'button', 'menu', 'icon', 'showing', 'display', 'on my', 'this page', 'what do you see', 'what is on'];
+const WORLD_WORDS = ['weather', 'today', 'news', 'capital', 'president', 'who won', 'what is the', 'what was the', 'when did', 'how far', 'population', 'meaning', 'recipe', 'who is', 'what time', 'temperature', 'forecast', 'stock', 'price', 'distance', 'history', 'famous', 'country', 'city', 'date today', 'day today'];
+
+function needsScreen(request) {
+  const r = (' ' + String(request || '').toLowerCase() + ' ');
+  for (const w of SCREEN_WORDS) if (r.includes(w)) return true;
+  for (const w of WORLD_WORDS) if (r.includes(w)) return false;
+  return true; // default to screen
+}
+
 async function runPipeline(request, opts = {}) {
   const step = opts.step || 0;
   busy = true;
   try {
     cfg = loadConfig();
-    const { display, b64, mime } = await captureScreen();
     const mem = cfg.memoryEnabled ? await memory.tail(cfg.memoryPath, cfg.memoryTail) : [];
+
+    if (!needsScreen(request)) {
+      // research path: no screenshot. Search + text LLM answer.
+      showPanel({ mode: 'thinking', reply: 'Researching…' });
+      const results = await research.search(request);
+      const raw = await researchAnswer(cfg, request, results);
+      const parsed = jsonfix.parse(raw);
+      lastDisplay = null;
+      if (!opts.onParsed) pendingAction = parsed;
+      try {
+        const appName = await exec.frontmostApp();
+        await memory.append(cfg.memoryPath, { app: appName, req: request, reply: parsed.reply, intent: parsed.intent, step, mode: 'research' });
+      } catch { /* best-effort */ }
+      renderResult(parsed);
+      if (opts.onParsed) opts.onParsed(parsed);
+      return;
+    }
+
+    // screen path: capture + vision (current behavior)
+    const { display, b64, mime } = await captureScreen();
     const raw = await infer(cfg, request, b64, mime, mem);
     const parsed = jsonfix.parse(raw);
 
@@ -155,7 +190,7 @@ async function runPipeline(request, opts = {}) {
 
     try {
       const appName = await exec.frontmostApp();
-      await memory.append(cfg.memoryPath, { app: appName, req: request, reply: parsed.reply, intent: parsed.intent, step });
+      await memory.append(cfg.memoryPath, { app: appName, req: request, reply: parsed.reply, intent: parsed.intent, step, mode: 'screen' });
     } catch { /* memory is best-effort */ }
 
     renderResult(parsed);
@@ -426,20 +461,37 @@ if (!app.requestSingleInstanceLock()) {
       cfg = loadConfig();
       const ok = globalShortcut.register(cfg.hotkey, onHotkey);
       if (!ok) console.error('hotkey registration failed:', cfg.hotkey);
-      // Siri-style wake loop: "hey yudeat" → command → answer.
-      // Skip in smoke mode (no mic, no app loop).
+      // Siri-style wake loop: wake word ("deskmate") → awake → commands
+      // until "sleep". Hotkey wakes too. Skip in smoke mode (no mic).
       if (cfg.wakeEnabled && !process.env.DESKMATE_SMOKE) {
         let wakeStop = null;
         try {
           wakeStop = startWake((line) => {
+            const req = String(line || '').trim();
+            if (!req) return; // heard but nothing said — keep waiting
             if (busy) return; // don't stack commands over an in-flight one
             showPanel({ mode: 'thinking', reply: 'Working…' });
-            runPipeline(String(line || ''));
-          }, cfg);
+            runPipeline(req);
+          }, cfg, () => {
+            // wake word heard → instant ack so the user knows it's listening
+            exec.speak('Yo');
+          }, () => {
+            // sleep word heard → ack + the wake loop goes quiet
+            exec.speak('Bye');
+            closePanel();
+          });
         } catch (e) {
           console.error('wake:', e.message);
         }
-        app.on('will-quit', () => { if (wakeStop) wakeStop(); });
+        // Hotkey wakes the agent without saying the wake word.
+        if (wakeStop) {
+          const origHotkey = onHotkey;
+          onHotkey = () => {
+            wakeStop.setState(true); // awake until told to sleep
+            origHotkey();
+          };
+        }
+        app.on('will-quit', () => { if (wakeStop) wakeStop.stop(); });
       }
     } catch (e) {
       console.error('config:', e.message);

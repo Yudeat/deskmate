@@ -8,7 +8,7 @@ const SYSTEM = [
   '- x,y: integer 0..1000 fractions of the screenshot, where 0,0 is the top-left corner. Use -1 when not applicable.',
   '- HIGHLIGHT: annotate the relevant UI element; best-guess x,y and a short label (3-6 words).',
   '- CLICK/TYPE/KEYS: you may propose an action; the user confirms before it executes.',
-  '- followUp: OPTIONAL. A short, specific question that naturally continues the user\'s task — something you\'d actually ask to be more helpful (e.g. after summarizing a doc: "Want me to draft a reply to this thread?"). Ask ONE, only when genuinely useful. Empty string when not.',
+  '- followUp: OPTIONAL. Ask ONE follow-up question ONLY when the request involved reading/understanding content (summarizing, explaining a page/doc/email, answering from the screen) AND the user would plausibly want a next step. NEVER ask after a pure action (click, type, open, play). Empty string when not applicable.',
   '- When continuing a task (you already acted on the screen), set taskComplete=true ONLY when the user\'s request is fully satisfied. Otherwise:',
   '  taskComplete=false and propose the NEXT single action (CLICK/TYPE/KEYS).',
   '  If you need information or a decision from the user (e.g. a name to fill in), use intent ANSWER with your question and taskComplete=false.',

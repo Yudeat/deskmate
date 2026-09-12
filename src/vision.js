@@ -107,7 +107,64 @@ async function infer(cfg, request, b64, mime, mem) {
   return text;
 }
 
-module.exports = { infer };
+module.exports = { infer, transcribe, researchAnswer };
+
+// v2.1: text-only research answer. The user asked a general/world question
+// ("weather today", "capital of France") — no screenshot. Search results are
+// injected as context; the model answers from those + its knowledge. Reuses
+// the same providers with a text-only body.
+async function researchAnswer(cfg, request, searchResults) {
+  const context = searchResults
+    ? `WEB SEARCH RESULTS (use these to answer, cite them):\n${searchResults}`
+    : 'WEB SEARCH returned nothing — answer from your knowledge.';
+  const system = 'You are deskmate, a helpful assistant. Answer the user\'s question using the web search results when relevant. Be concise (1-3 sentences) and accurate. Reply with ONLY valid JSON: {"intent":"ANSWER","x":-1,"y":-1,"label":"","text":"","keys":"","reply":"<your answer>","followUp":""}.';
+  const prompt = `${system}\n\n${context}\n\nUSER QUESTION:\n${request}`;
+
+  switch (cfg.provider) {
+    case 'gemini': {
+      const model = cfg.model || 'gemini-3.6-flash';
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(cfg.apiKey)}`;
+      const body = { contents: [{ parts: [{ text: prompt }] }] };
+      return await postJson(url, { 'Content-Type': 'application/json' }, body, (d) => (d.candidates?.[0]?.content?.parts || []).map((p) => p.text || '').join(''));
+    }
+    case 'groq':
+    case 'openrouter': {
+      const model = cfg.provider === 'groq' ? (cfg.model || 'llama-3.3-70b-versatile') : (cfg.model || 'openrouter/free');
+      const url = cfg.provider === 'groq' ? 'https://api.groq.com/openai/v1/chat/completions' : 'https://openrouter.ai/api/v1/chat/completions';
+      const headers = { 'Content-Type': 'application/json', Authorization: `Bearer ${cfg.apiKey}` };
+      const body = { model, temperature: 0, messages: [{ role: 'user', content: prompt }] };
+      return await postJson(url, headers, body, (d) => d.choices?.[0]?.message?.content || '');
+    }
+    case 'ollama': {
+      const model = cfg.model || 'llama3.2';
+      const body = { model, stream: false, format: 'json', messages: [{ role: 'user', content: prompt }] };
+      return await postJson('http://localhost:11434/api/chat', { 'Content-Type': 'application/json' }, body, (d) => d.message?.content || '');
+    }
+    default:
+      throw Object.assign(new Error(`provider ${cfg.provider}`), { code: 'E_CONFIG' });
+  }
+}
+
+async function postJson(url, headers, body, extract) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 30000);
+  let res;
+  try {
+    res = await fetch(url, { method: 'POST', headers, body: JSON.stringify(body), signal: ctrl.signal });
+  } catch (e) {
+    clearTimeout(timer);
+    throw Object.assign(new Error(`network error: ${e.message}`), { code: 'E_VISION' });
+  }
+  clearTimeout(timer);
+  if (!res.ok) {
+    const detail = (await res.text()).slice(0, 300);
+    throw Object.assign(new Error(`${detail || res.status}`), { code: 'E_VISION' });
+  }
+  const data = await res.json();
+  const text = extract(data);
+  if (!text) throw Object.assign(new Error('empty model response'), { code: 'E_PARSE' });
+  return text;
+}
 
 // v2: speech-to-text via the SAME provider key the user already has.
 // Groq's transcription endpoint (whisper) needs no extra signup. WAV buffer.
