@@ -116,7 +116,7 @@ let _mpvProc = null;
 function playMedia(query) {
   const q = String(query ?? '').trim().slice(0, 200);
   if (!q) return '';
-  const resolve = spawnSync('/opt/homebrew/bin/yt-dlp', ['-g', `ytsearch1:${q}`, '--no-playlist'], { encoding: 'utf8', timeout: 60000 });
+  const resolve = spawnSync('/opt/homebrew/bin/yt-dlp', ['-g', '-f', 'bestaudio', `ytsearch1:${q}`, '--no-playlist'], { encoding: 'utf8', timeout: 60000 });
   if (resolve.status !== 0 || !resolve.stdout.trim()) {
     console.error('yt-dlp:', (resolve.stderr || resolve.stdout || '').trim().slice(0, 200));
     throw Object.assign(new Error('could not resolve media for: ' + q), { code: 'E_EXEC' });
