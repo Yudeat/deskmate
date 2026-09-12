@@ -80,7 +80,9 @@ function startWake(onCommand, cfg, onWake, onSleep) {
     // Echo guard: while TTS is speaking, the mic picks up the reply and
     // whisper would transcribe it as a new command — infinite loop. Drop
     // anything heard during speech (we saw "Yeah. Yeah." echoes in logs).
-    if (exec.isSpeaking()) return;
+    // Also drop for 2s AFTER TTS ends — the echo lingers in the room and
+    // whisper may transcribe the tail end of the answer late.
+    if (exec.isSpeaking() || Date.now() - exec.lastSpeakEnd() < 2000) return;
     const events = {
       awake: () => { if (onWake) onWake(); },
       sleep: () => { if (onSleep) onSleep(); },

@@ -113,7 +113,9 @@ function frontmostApp() {
 // rapid replies don't stack/overlap.
 let _sayProc = null;
 let _speaking = false; // echo guard: true while TTS audio is in the air
+let _lastSpeakEnd = 0; // ms epoch when TTS last finished — echo may linger
 function isSpeaking() { return _speaking; }
+function lastSpeakEnd() { return _lastSpeakEnd; }
 function speak(text) {
   const t = String(text ?? '').slice(0, 400).trim();
   if (!t) return;
@@ -122,8 +124,8 @@ function speak(text) {
   } catch { /* already dead */ }
   _speaking = true;
   _sayProc = spawn('/usr/bin/say', [t], { detached: true, stdio: 'ignore' });
-  _sayProc.on('error', () => { _speaking = false; }); // e.g. TCC/missing binary — never crash
-  _sayProc.on('exit', () => { _speaking = false; });
+  _sayProc.on('error', () => { _speaking = false; _lastSpeakEnd = Date.now(); }); // e.g. TCC/missing binary — never crash
+  _sayProc.on('exit', () => { _speaking = false; _lastSpeakEnd = Date.now(); });
   _sayProc.unref();
 }
 
@@ -147,4 +149,4 @@ function probeAccessibility() {
   }
 }
 
-module.exports = { clickAt, pressKeys, typeText, frontmostApp, probeAccessibility, parseCombo, speak, stopSpeaking, isSpeaking };
+module.exports = { clickAt, pressKeys, typeText, frontmostApp, probeAccessibility, parseCombo, speak, stopSpeaking, isSpeaking, lastSpeakEnd };
