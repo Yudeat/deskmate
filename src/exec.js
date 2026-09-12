@@ -108,6 +108,27 @@ function frontmostApp() {
   return osa('tell application "System Events" to get name of first application process whose frontmost is true');
 }
 
+// Open a URL/app with the OS default (zero deps: /usr/bin/open).
+// argv-escaped, never script-concat — safe for any URL string.
+function openUrl(target) {
+  const t = String(target ?? '').trim();
+  if (!t) return '';
+  if (t.length > 512) throw Object.assign(new Error('target too long'), { code: 'E_EXEC' });
+  // Basic scheme guard: allow http(s), file, or bare app names.
+  if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(t) && !/^[A-Za-z0-9 .-]+$/.test(t)) {
+    throw Object.assign(new Error('unsupported open target'), { code: 'E_EXEC' });
+  }
+  // Reject placeholder/angle-bracket URLs (model echoing prompt examples).
+  if (/<|>/.test(t)) {
+    throw Object.assign(new Error(`invalid open target: ${t.slice(0, 60)}`), { code: 'E_EXEC' });
+  }
+  const r = spawnSync('/usr/bin/open', [t], { encoding: 'utf8', timeout: 8000 });
+  if (r.status !== 0) {
+    throw Object.assign(new Error(`open failed: ${(r.stderr || r.stdout || '').trim().slice(0, 200)}`), { code: 'E_EXEC' });
+  }
+  return (r.stdout || '').trim();
+}
+
 // macOS built-in TTS: zero deps. Text goes as argv (never script-concat).
 // Fire-and-forget so the UI never blocks; kill the previous utterance so
 // rapid replies don't stack/overlap.
@@ -149,4 +170,4 @@ function probeAccessibility() {
   }
 }
 
-module.exports = { clickAt, pressKeys, typeText, frontmostApp, probeAccessibility, parseCombo, speak, stopSpeaking, isSpeaking, lastSpeakEnd };
+module.exports = { clickAt, pressKeys, typeText, frontmostApp, probeAccessibility, parseCombo, speak, stopSpeaking, isSpeaking, lastSpeakEnd, openUrl };

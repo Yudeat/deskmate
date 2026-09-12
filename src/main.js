@@ -7,7 +7,7 @@ const { spawn } = require('node:child_process');
 const { loadConfig } = require('./config');
 const memory = require('./memory');
 const jsonfix = require('./jsonfix');
-const { infer, transcribe, researchAnswer } = require('./vision');
+const { infer, transcribe, researchAnswer, commandText } = require('./vision');
 const exec = require('./exec');
 const { startWake } = require('./wake');
 const { search } = require('./research');
@@ -138,19 +138,19 @@ async function captureScreen() {
 
 // ---- pipeline ----
 
-// Decide: does the request need the screen, or is it a world/general question?
-// Screen words → capture + vision. World words → research + text LLM.
-// Ambiguous → screen (current behavior, safe default). Heuristic, not a model
-// call — zero extra latency. (ponytail: keyword lists; a classifier could
-// replace this if it misroutes in practice.)
-const SCREEN_WORDS = ['screen', 'screenshot', 'desktop', 'window', 'app', 'click', 'open', 'type', 'file', 'folder', 'tab', 'button', 'menu', 'icon', 'showing', 'display', 'on my', 'this page', 'what do you see', 'what is on'];
+// Decide: does the request need the screen, or is it a command/knowledge
+// question? EXPLICIT screen words → capture + vision (user asked to see
+// something). Everything else → direct action (text-only LLM): "play a
+// song on youtube" → OPEN the search URL, never a screenshot.
+// Heuristic, not a model call — zero extra latency.
+// (ponytail: keyword lists; a classifier could replace this if misroutes.)
+const SCREEN_WORDS = ['screen', 'screenshot', 'desktop', 'window', 'app', 'click', 'open', 'type', 'file', 'folder', 'tab', 'button', 'menu', 'icon', 'showing', 'display', 'on my', 'this page', 'what do you see', 'what is on', 'read', 'summarize', 'summary', 'explain this', 'what does this', 'what is this', 'look at', 'see this'];
 const WORLD_WORDS = ['weather', 'today', 'news', 'capital', 'president', 'who won', 'what is the', 'what was the', 'when did', 'how far', 'population', 'meaning', 'recipe', 'who is', 'what time', 'temperature', 'forecast', 'stock', 'price', 'distance', 'history', 'famous', 'country', 'city', 'date today', 'day today'];
 
 function needsScreen(request) {
   const r = (' ' + String(request || '').toLowerCase() + ' ');
   for (const w of SCREEN_WORDS) if (r.includes(w)) return true;
-  for (const w of WORLD_WORDS) if (r.includes(w)) return false;
-  return true; // default to screen
+  return false; // default: NO screenshot — direct action
 }
 
 async function runPipeline(request, opts = {}) {
@@ -162,17 +162,34 @@ async function runPipeline(request, opts = {}) {
     const mem = cfg.memoryEnabled ? await memory.tail(cfg.memoryPath, cfg.memoryTail) : [];
 
     if (!needsScreen(request)) {
-      // research path: no screenshot. Search + text LLM answer.
-      showPanel({ mode: 'thinking', reply: 'Researching…' });
-      const results = await search(request);
-      const raw = await researchAnswer(cfg, request, results);
+      // Direct-action path: NO screenshot. The LLM emits OPEN/TYPE/KEYS
+      // (execute immediately — user said "just do it") or ANSWER (speak).
+      // For world/knowledge questions, ground with research first.
+      const isWorld = WORLD_WORDS.some((w) => (' ' + String(request || '').toLowerCase() + ' ').includes(w));
+      if (isWorld) {
+        showPanel({ mode: 'thinking', reply: 'Researching…' });
+        const results = await search(request);
+        const raw = await researchAnswer(cfg, request, results);
+        const parsed = jsonfix.parse(raw);
+        lastDisplay = null;
+        if (!opts.onParsed) pendingAction = parsed;
+        try {
+          const appName = await exec.frontmostApp();
+          await memory.append(cfg.memoryPath, { app: appName, req: request, reply: parsed.reply, intent: parsed.intent, step, mode: 'research' });
+        } catch { /* best-effort */ }
+        renderResult(parsed);
+        if (opts.onParsed) opts.onParsed(parsed);
+        return;
+      }
+      showPanel({ mode: 'thinking', reply: 'Working…' });
+      const raw = await commandText(cfg, request, mem);
       const parsed = jsonfix.parse(raw);
       lastDisplay = null;
       if (!opts.onParsed) pendingAction = parsed;
       try {
         const appName = await exec.frontmostApp();
-        await memory.append(cfg.memoryPath, { app: appName, req: request, reply: parsed.reply, intent: parsed.intent, step, mode: 'research' });
-      } catch { /* best-effort */ }
+        await memory.append(cfg.memoryPath, { app: appName, req: request, reply: parsed.reply, intent: parsed.intent, step, mode: 'command' });
+      } catch { /* memory is best-effort */ }
       renderResult(parsed);
       if (opts.onParsed) opts.onParsed(parsed);
       return;
@@ -207,6 +224,17 @@ function renderResult(p) {
   exec.stopSpeaking();
   if (p.x >= 0 && p.y >= 0 && lastDisplay && ['HIGHLIGHT', 'CLICK'].includes(p.intent)) {
     showOverlay(p, lastDisplay);
+  }
+  // OPEN is a direct action — the user said "just do it", no confirm.
+  if (p.intent === 'OPEN') {
+    try {
+      exec.openUrl(p.url || p.reply || '');
+      showPanel({ mode: 'info', reply: p.reply || 'Opening…' });
+      if (cfg && cfg.ttsEnabled) exec.speak(p.reply || 'Opening…');
+    } catch (e) {
+      renderError(e);
+    }
+    return;
   }
   const follow = p.followUp ? `\n\n${p.followUp}` : '';
   if (p.intent === 'CLICK' || p.intent === 'TYPE' || p.intent === 'KEYS') {

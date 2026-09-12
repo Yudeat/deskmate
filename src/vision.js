@@ -157,7 +157,52 @@ async function readNdjson(stream, ctrl) {
   return out;
 }
 
-module.exports = { infer, transcribe, researchAnswer };
+// v2.2: direct-command mode — NO screenshot. The user wants actions done,
+// not described ("play a song on youtube" → OPEN the search URL, don't
+// screenshot-scroll). Routes through the same text-only providers; the
+// model emits the action schema (OPEN/CLICK/TYPE/KEYS/ANSWER) from
+// knowledge alone. Fast (no image) — the default path for most commands.
+async function commandText(cfg, request, memoryLines) {
+  const mem = memoryLines && memoryLines.length
+    ? memoryLines.map((m) => `- ${m.ts} ${m.app ? '[' + m.app + ']' : ''} req="${m.req || ''}" reply="${m.reply || ''}"`).join('\n')
+    : 'none';
+  const system = `You are deskmate, a macOS assistant. Decide the single best action for the user's request and respond with ONLY valid JSON (no prose):
+Schema: {"intent":"OPEN|TYPE|KEYS|ANSWER","x":-1,"y":-1,"label":"","text":"","keys":"","url":"","reply":"","followUp":""}
+Rules:
+- OPEN: open a URL/app via /usr/bin/open. "url" holds the full URL. "play <song> on youtube" (song NAMED) → https://www.youtube.com/results?search_query=<url-encoded-song>. If NO specific song/topic is named ("play a song", "play music"), use https://www.youtube.com/. "open gmail" → https://mail.google.com. Use intent OPEN for ANY web/app-launch request. No x,y. NEVER use placeholders like <song+encoded> — always a concrete, valid URL.
+- TYPE: type "text" into the focused field (clipboard paste).
+- KEYS: press a combo like "cmd+shift+p" (use for shortcuts like "play/pause" = "space").
+- ANSWER: answer a knowledge question in "reply" (no action).
+- reply: 1 short spoken sentence what you did/will do. followUp: empty (actions never get follow-ups).`;
+
+  const prompt = `${system}\n\nRECENT CONTEXT:\n${mem}\n\nUSER REQUEST:\n${request}`;
+
+  switch (cfg.provider) {
+    case 'gemini': {
+      const model = cfg.model || 'gemini-3.6-flash';
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(cfg.apiKey)}`;
+      const body = { contents: [{ parts: [{ text: prompt }] }] };
+      return await postJson(url, { 'Content-Type': 'application/json' }, body, (d) => (d.candidates?.[0]?.content?.parts || []).map((p) => p.text || '').join(''));
+    }
+    case 'groq':
+    case 'openrouter': {
+      const model = cfg.provider === 'groq' ? (cfg.model || 'llama-3.3-70b-versatile') : (cfg.model || 'openrouter/free');
+      const url = cfg.provider === 'groq' ? 'https://api.groq.com/openai/v1/chat/completions' : 'https://openrouter.ai/api/v1/chat/completions';
+      const headers = { 'Content-Type': 'application/json', Authorization: `Bearer ${cfg.apiKey}` };
+      const body = { model, temperature: 0, messages: [{ role: 'user', content: prompt }] };
+      return await postJson(url, headers, body, (d) => d.choices?.[0]?.message?.content || '');
+    }
+    case 'ollama': {
+      const model = cfg.model || 'llama3.2';
+      const body = { model, stream: true, format: 'json', messages: [{ role: 'user', content: prompt }] };
+      return await postJson('http://localhost:11434/api/chat', { 'Content-Type': 'application/json' }, body, (d) => d.message?.content || '', 240000, true);
+    }
+    default:
+      throw Object.assign(new Error(`provider ${cfg.provider}`), { code: 'E_CONFIG' });
+  }
+}
+
+module.exports = { infer, transcribe, researchAnswer, commandText };
 
 // v2.1: text-only research answer. The user asked a general/world question
 // ("weather today", "capital of France") — no screenshot. Search results are
