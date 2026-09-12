@@ -24,25 +24,26 @@ function buildMatcher(wakeWord) {
   const w = (wakeWord || 'deskmate').toLowerCase();
   // Acoustic/typo variants. The model has produced "Deskmate" AND
   // "Descmate" (missing k), so exact variants + fuzzy edit-distance-1.
-  const exact = [w, 'desk mate', 'deskmat', 'desk mat', 'deskmay', 'desk may', 'desk me', 'thanks mate', 'thanx mate', 'thanks, mate', 'thanksmate'];
-  const sorted = exact.sort((a, b) => b.length - a.length);
+  const base = [w, 'desk mate', 'deskmat', 'desk mat', 'deskmay', 'desk may', 'desk me', 'thanks mate', 'thanx mate', 'thanks, mate', 'thanksmate', 'decimate', 'decimated', 'diskmate', 'descimate', 'descomate', 'dismate', 'deck mate', 'desk meat'];
+  const sorted = base.sort((a, b) => b.length - a.length);
   return { list: sorted, fuzzy: w };
 }
 
-// Levenshtein distance ≤1: catches descmate, deskmat, etc. cheaply.
-function dist1(a, b) {
-  if (Math.abs(a.length - b.length) > 1) return false;
+// Levenshtein distance ≤2: catches descmate, deskmat, decimate, etc.
+// Real-voice test produced "Decimate" (s→c, k→i = 2 edits) — dist-1 missed it.
+function dist1(a, b, max = 2) {
+  if (Math.abs(a.length - b.length) > max) return false;
   let i = 0, j = 0, edits = 0;
   while (i < a.length && j < b.length) {
     if (a[i] === b[j]) { i++; j++; }
     else {
-      if (++edits > 1) return false;
+      if (++edits > max) return false;
       if (a.length > b.length) i++;
       else if (b.length > a.length) j++;
       else { i++; j++; }
     }
   }
-  return edits + (a.length - i) + (b.length - j) <= 1;
+  return edits + (a.length - i) + (b.length - j) <= max;
 }
 
 const SLEEP_PHRASES = ['sleep', 'go to sleep', 'time to sleep', 'sleep deskmate', 'deskmate sleep', 'go to sleep deskmate', 'sleep now', 'deskmate go to sleep'];
@@ -84,6 +85,10 @@ function startWake(onCommand, cfg, onWake, onSleep) {
     // whisper may transcribe the tail end of the answer late (seen live:
     // an "Opening." echo became a command ~2s after TTS finished).
     if (exec.isSpeaking() || Date.now() - exec.lastSpeakEnd() < 5000) return;
+    const trimmed = line.trim().replace(/^\[Start speaking\]\s*/, '');
+    if (trimmed.startsWith('(') && trimmed.endsWith(')')) return; // noise cue: (water splashing), (sighs) — never a command
+    if (trimmed.startsWith('[') && trimmed.endsWith(']')) return; // tag: [Silence], [BLANK_AUDIO] — never speech
+    const text = trimmed;
     const events = {
       awake: () => { if (onWake) onWake(); },
       sleep: () => { if (onSleep) onSleep(); },
@@ -118,7 +123,10 @@ function classify({ awake }, line, matcher, events) {
     }
     const words = lower.split(/[^a-z']+/).filter(Boolean);
     for (const word of words) {
-      if (dist1(word, matcher.fuzzy)) return { word, idx: lower.indexOf(word) };
+      // Fuzzy only when the word starts with a d-sound (desk- family); kills
+      // false wakes from words like "water"/"that's" that happen to be
+      // dist-2 from "deskmate" by coincidence.
+      if (word[0] === matcher.fuzzy[0] && dist1(word, matcher.fuzzy)) return { word, idx: lower.indexOf(word) };
     }
     return null;
   })();
@@ -151,7 +159,7 @@ function classify({ awake }, line, matcher, events) {
 // self-check: exact + fuzzy matcher catches variants
 if (require.main === module) {
   const m = buildMatcher('deskmate');
-  const cases = ['deskmate tell me today\'s date', 'Descmate, what is the time?', 'desk mate, open safari', 'thanks mate open safari', 'deskmate sleep', 'go to sleep', 'deskmate can you play a song', 'can you play a song'];
+  const cases = ['deskmate tell me today\'s date', 'Descmate, what is the time?', 'desk mate, open safari', 'thanks mate open safari', 'deskmate sleep', 'go to sleep', 'deskmate can you play a song', 'can you play a song', 'Decimate, what is the time?', 'cement play shape of you'];
   for (const c of cases) {
     const lower = c.toLowerCase();
     let hit = null;
