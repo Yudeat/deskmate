@@ -51,7 +51,7 @@ function startWake(onCommand, cfg, onWake, onSleep) {
   const bin = cfg.wakeBin || 'whisper-stream';
   const model = cfg.wakeModel || '/opt/homebrew/share/whisper.cpp/models/ggml-base.en.bin';
   const matcher = buildMatcher(cfg.wakeWord);
-  const args = ['-m', model, '-l', 'en', '-c', String(cfg.wakeCapture || 1), '--step', '3000', '--length', '4000', '--keep', '1500', '-vth', '0.3'];
+  const args = ['-m', model, '-l', 'en', '--step', '3000', '--length', '4000', '--keep', '1500', '-vth', '0.3'];
   let proc = null;
   let buf = '';
   let awake = false; // state machine: asleep until wake word or hotkey
