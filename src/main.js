@@ -22,6 +22,7 @@ let busy = false; // single-flight: ignore hotkey/submit while a pipeline runs
 let stepCount = 0; // task-loop step cap
 let lastActionKey = null; // stuck-loop guard: same action twice in a row
 let lastActionRepeats = 0;
+let activeRequest = ''; // the current request — queried by PLAY/OPEN handlers
 
 // ---- renderer hardening: every window gets sandbox + context isolation ----
 const WEB = {
@@ -156,6 +157,7 @@ function needsScreen(request) {
 async function runPipeline(request, opts = {}) {
   const step = opts.step || 0;
   busy = true;
+  activeRequest = String(request || '').trim();
   console.error(`[pipeline] start req=${JSON.stringify(String(request || '').slice(0, 80))}`);
   try {
     cfg = loadConfig();
@@ -231,6 +233,28 @@ function renderResult(p) {
       exec.openUrl(p.url || p.reply || '');
       showPanel({ mode: 'info', reply: p.reply || 'Opening…' });
       if (cfg && cfg.ttsEnabled) exec.speak(p.reply || 'Opening…');
+    } catch (e) {
+      renderError(e);
+    }
+    return;
+  }
+  // PLAY is direct too — mpv plays the top youtube result for the query.
+  if (p.intent === 'PLAY') {
+    try {
+      // Guard against the model echoing an unrelated query (saw llama3.2
+      // repeat a previous example). Derive the query from the REQUEST when
+      // the model's text doesn't look derived from it.
+      const reqWords = new Set(String(activeRequest || '').toLowerCase().split(/[^a-z0-9]+/).filter((w) => w.length > 2));
+      let query = p.text || '';
+      const textWords = query.toLowerCase().split(/[^a-z0-9]+/).filter((w) => w.length > 2);
+      const overlap = textWords.filter((w) => reqWords.has(w)).length;
+      if (!query || overlap < Math.min(1, textWords.length)) {
+        // derive: strip leading 'play'/'please' + trailing 'on youtube'
+        query = String(activeRequest || '').replace(/^(please\s+)?play\s+/i, '').replace(/\s+on\s+(youtube|music)\s*$/i, '').trim() || query;
+      }
+      exec.playMedia(query);
+      showPanel({ mode: 'info', reply: p.reply || 'Playing…' });
+      if (cfg && cfg.ttsEnabled) exec.speak(p.reply || 'Playing…');
     } catch (e) {
       renderError(e);
     }

@@ -108,8 +108,31 @@ function frontmostApp() {
   return osa('tell application "System Events" to get name of first application process whose frontmost is true');
 }
 
-// Open a URL/app with the OS default (zero deps: /usr/bin/open).
-// argv-escaped, never script-concat — safe for any URL string.
+// Play media via mpv + yt-dlp (native macOS, plays the TOP youtube result).
+// mpv's builtin ytdl_hook fails on this build ("Cannot open file ytsearch1:"),
+// so resolve the URL via yt-dlp -g ourselves, then hand it to mpv.
+// argv-escaped, never shell-concat. spawn, not spawnSync — mpv is long-lived.
+let _mpvProc = null;
+function playMedia(query) {
+  const q = String(query ?? '').trim().slice(0, 200);
+  if (!q) return '';
+  const resolve = spawnSync('/opt/homebrew/bin/yt-dlp', ['-g', `ytsearch1:${q}`, '--no-playlist'], { encoding: 'utf8', timeout: 60000 });
+  if (resolve.status !== 0 || !resolve.stdout.trim()) {
+    console.error('yt-dlp:', (resolve.stderr || resolve.stdout || '').trim().slice(0, 200));
+    throw Object.assign(new Error('could not resolve media for: ' + q), { code: 'E_EXEC' });
+  }
+  const url = resolve.stdout.trim().split('\n')[0]; // first format URL
+  _mpvProc = spawn('/opt/homebrew/bin/mpv', [url], { stdio: 'ignore', detached: true });
+  _mpvProc.on('error', (e) => {
+    console.error('mpv:', e.message);
+    _mpvProc = null;
+  });
+  _mpvProc.unref();
+  return q;
+}
+function stopMedia() {
+  if (_mpvProc) { try { _mpvProc.kill(); } catch {} _mpvProc = null; }
+}
 function openUrl(target) {
   const t = String(target ?? '').trim();
   if (!t) return '';
@@ -170,4 +193,4 @@ function probeAccessibility() {
   }
 }
 
-module.exports = { clickAt, pressKeys, typeText, frontmostApp, probeAccessibility, parseCombo, speak, stopSpeaking, isSpeaking, lastSpeakEnd, openUrl };
+module.exports = { clickAt, pressKeys, typeText, frontmostApp, probeAccessibility, parseCombo, speak, stopSpeaking, isSpeaking, lastSpeakEnd, openUrl, playMedia, stopMedia };
