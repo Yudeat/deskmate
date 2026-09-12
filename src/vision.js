@@ -63,7 +63,11 @@ function build(cfg, request, b64, mime, mem) {
       return {
         url: 'http://localhost:11434/api/chat',
         headers: { 'Content-Type': 'application/json' },
-        body: { model, stream: false, format: 'json', messages: [{ role: 'user', content: prompt, images: [b64] }] },
+        // stream:true — Ollama sends progressive token lines. Chromium's
+        // fetch aborts a connection that idles ~60s waiting for the ONE
+        // big response (stream:false) from a slow local vision model.
+        // Streaming keeps the socket active and works in Electron.
+        body: { model, stream: true, format: 'json', messages: [{ role: 'user', content: prompt, images: [b64] }] },
         extract: (d) => d.message?.content || '',
       };
     }
@@ -74,7 +78,7 @@ function build(cfg, request, b64, mime, mem) {
 
 async function infer(cfg, request, b64, mime, mem) {
   const { url, headers, body, extract } = build(cfg, request, b64, mime, mem);
-  const timeoutMs = cfg.provider === 'ollama' ? 60000 : 30000;
+  const timeoutMs = cfg.provider === 'ollama' ? 240000 : 30000;
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), timeoutMs);
 
@@ -101,10 +105,56 @@ async function infer(cfg, request, b64, mime, mem) {
     throw Object.assign(new Error(`vision ${res.status}: ${detail}`), { code: 'E_VISION' });
   }
 
+  // Ollama with stream:true → NDJSON lines; join all message deltas.
+  // Hold the abort timer across the whole read (stalled streams must die,
+  // or they monopolize Ollama's single-request queue forever).
+  if (body.stream) {
+    const text = await readNdjson(res.body, ctrl);
+    clearTimeout(timer);
+    if (!text) throw Object.assign(new Error('empty model response'), { code: 'E_PARSE' });
+    return text;
+  }
+  clearTimeout(timer);
   const data = await res.json();
   const text = extract(data);
   if (!text) throw Object.assign(new Error('empty model response'), { code: 'E_PARSE' });
   return text;
+}
+
+// Reads an NDJSON response body (Ollama stream:true) and joins the
+// message deltas into one string. Keeps consuming lines as they arrive,
+// which is what resets Chromium's idle timer. ctrl (optional) is the
+// abort controller — on timeout the reader is cancelled so the fetch
+// actually dies (not just the timer).
+async function readNdjson(stream, ctrl) {
+  const reader = stream.getReader();
+  const dec = new TextDecoder();
+  let buf = '';
+  let out = '';
+  let aborted = false;
+  if (ctrl) ctrl.signal.addEventListener('abort', () => { aborted = true; reader.cancel(); });
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (aborted) break;
+      buf += dec.decode(value, { stream: true });
+      let i;
+      while ((i = buf.indexOf('\n')) >= 0) {
+        const line = buf.slice(0, i).trim();
+        buf = buf.slice(i + 1);
+        if (!line) continue;
+        try {
+          const d = JSON.parse(line);
+          if (d.message && typeof d.message.content === 'string') out += d.message.content;
+          if (d.done) return out;
+        } catch { /* partial line — skip */ }
+      }
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  return out;
 }
 
 module.exports = { infer, transcribe, researchAnswer };
@@ -137,17 +187,17 @@ async function researchAnswer(cfg, request, searchResults) {
     }
     case 'ollama': {
       const model = cfg.model || 'llama3.2';
-      const body = { model, stream: false, format: 'json', messages: [{ role: 'user', content: prompt }] };
-      return await postJson('http://localhost:11434/api/chat', { 'Content-Type': 'application/json' }, body, (d) => d.message?.content || '');
+      const body = { model, stream: true, format: 'json', messages: [{ role: 'user', content: prompt }] };
+      return await postJson('http://localhost:11434/api/chat', { 'Content-Type': 'application/json' }, body, (d) => d.message?.content || '', 240000, true);
     }
     default:
       throw Object.assign(new Error(`provider ${cfg.provider}`), { code: 'E_CONFIG' });
   }
 }
 
-async function postJson(url, headers, body, extract) {
+async function postJson(url, headers, body, extract, timeoutMs = 30000, streamMode = false) {
   const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), 30000);
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
   let res;
   try {
     res = await fetch(url, { method: 'POST', headers, body: JSON.stringify(body), signal: ctrl.signal });
@@ -160,6 +210,18 @@ async function postJson(url, headers, body, extract) {
     const detail = (await res.text()).slice(0, 300);
     throw Object.assign(new Error(`${detail || res.status}`), { code: 'E_VISION' });
   }
+  // streamMode: Ollama stream:true → NDJSON deltas (keeps Chromium's
+  // socket alive during slow local inference).
+  if (streamMode) {
+    // Keep the abort timer alive through the WHOLE body read — clearing it
+    // at headers lets a stalled stream hang forever and monopolize Ollama's
+    // single-request queue (seen live: app request blocked all others).
+    const text = await readNdjson(res.body, ctrl);
+    clearTimeout(timer);
+    if (!text) throw Object.assign(new Error('empty model response'), { code: 'E_PARSE' });
+    return text;
+  }
+  clearTimeout(timer);
   const data = await res.json();
   const text = extract(data);
   if (!text) throw Object.assign(new Error('empty model response'), { code: 'E_PARSE' });
