@@ -2,11 +2,12 @@
 
 const path = require('node:path');
 const { app, BrowserWindow, globalShortcut, desktopCapturer, ipcMain, screen, shell } = require('electron');
+const { spawn } = require('node:child_process');
 
 const { loadConfig } = require('./config');
 const memory = require('./memory');
 const jsonfix = require('./jsonfix');
-const { infer } = require('./vision');
+const { infer, transcribe } = require('./vision');
 const exec = require('./exec');
 
 let cfg = null;
@@ -166,13 +167,17 @@ async function runPipeline(request, opts = {}) {
 }
 
 function renderResult(p) {
+  exec.stopSpeaking();
   if (p.x >= 0 && p.y >= 0 && lastDisplay && ['HIGHLIGHT', 'CLICK'].includes(p.intent)) {
     showOverlay(p, lastDisplay);
   }
+  const follow = p.followUp ? `\n\n${p.followUp}` : '';
   if (p.intent === 'CLICK' || p.intent === 'TYPE' || p.intent === 'KEYS') {
-    showPanel({ mode: 'action', intent: p.intent, reply: p.reply || `I'll ${p.intent.toLowerCase()} on your screen.`, text: p.text, keys: p.keys });
+    showPanel({ mode: 'action', intent: p.intent, reply: (p.reply || `I'll ${p.intent.toLowerCase()} on your screen.`) + follow, text: p.text, keys: p.keys });
+    if (cfg && cfg.ttsEnabled) exec.speak((p.reply || `I'll ${p.intent.toLowerCase()} on your screen.`) + (p.followUp ? ' ' + p.followUp : ''));
   } else {
-    showPanel({ mode: 'info', reply: p.reply || 'Done.' });
+    showPanel({ mode: 'info', reply: (p.reply || 'Done.') + follow });
+    if (cfg && cfg.ttsEnabled) exec.speak((p.reply || 'Done.') + (p.followUp ? ' ' + p.followUp : ''));
   }
 }
 
@@ -217,13 +222,79 @@ function closeAll() {
   closeOverlay();
 }
 
+// ---- v2: voice recording (ffmpeg, zero deps) + TTS wiring ----
+
+let recProc = null;
+function startRecording(file) {
+  // silencedetect on stderr: "silence_start: X" fires when the mic goes
+  // quiet. Auto-stop after real speech + a pause → no second hotkey press.
+  // -t 20 caps runaway recordings. (ponytail: fixed noise threshold; expose
+  // in config if your mic is noisy.)
+  recProc = spawn('ffmpeg', [
+    '-y', '-f', 'avfoundation', '-i', ':0',
+    '-ar', '16000', '-ac', '1',
+    '-af', 'silencedetect=noise=-30dB:d=0.7',
+    '-t', '20', file,
+  ], { stdio: ['ignore', 'ignore', 'pipe'] });
+  const started = Date.now();
+  recProc.stderr.on('data', (buf) => {
+    if (String(buf).includes('silence_start')) {
+      if ((Date.now() - started) / 1000 >= 1.2) autoStop();
+    }
+  });
+  recProc.on('error', (e) => {
+    recProc = null;
+    if (voiceActive) {
+      voiceActive = false;
+      busy = false;
+      renderError(Object.assign(new Error('Mic unavailable — grant Microphone permission in System Settings and restart deskmate'), { code: 'E_MIC' }));
+    }
+  });
+  recProc.on('close', () => {
+    // -t 20 cap hit: flush whatever we have (or nothing, if TCC-blocked).
+    if (voiceActive) autoStop();
+  });
+}
+function stopRecording() {
+  if (recProc) { try { recProc.kill('SIGTERM'); } catch {} recProc = null; }
+}
+const REC = '/tmp/deskmate-voice.wav';
+
+// Stop listening + transcribe + run. Shared by VAD, manual 2nd press, and the mic button.
+function autoStop() {
+  if (!voiceActive) return;
+  voiceActive = false;
+  stopRecording();
+  busy = false;
+  flushVoice();
+}
+
+// Shared voice path: button + hotkey both route here. Transcribe the last
+// recording and run it through the same pipeline as a typed question.
+async function flushVoice() {
+  try {
+    const wav = require('node:fs').readFileSync(REC);
+    if (!wav.length) return; // nothing said / TCC-blocked: stay quiet, don't error
+    showPanel({ mode: 'thinking', reply: 'Working…' });
+    const text = await transcribe(cfg, wav);
+    if (text) runPipeline(text, {});
+  } catch (e) {
+    renderError(e);
+  }
+}
+
 // ---- ipc ----
 
 ipcMain.on('panel:submit', (_e, text) => {
   if (busy) return;
+  exec.stopSpeaking();
   showPanel({ mode: 'thinking', reply: 'Thinking…' });
   runPipeline(String(text || ''));
 });
+
+// push-to-talk: hotkey down = record, up = transcribe + run
+ipcMain.on('voice:start', () => { if (!voiceActive && !busy) onHotkey(); });
+ipcMain.on('voice:stop', () => autoStop());
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -314,9 +385,24 @@ async function startupProbe() {
 }
 
 function onHotkey() {
-  if (busy) return;
-  showPanel({ mode: 'input', reply: '' });
+  if (busy && !voiceActive) return;
+  if (voiceActive) {
+    // second press while listening = cancel (VAD already auto-sends)
+    voiceActive = false;
+    stopRecording();
+    busy = false;
+    closeAll();
+    return;
+  }
+  // Siri-style: one press starts listening. VAD auto-stops + sends when
+  // you pause after speaking. No second press needed.
+  voiceActive = true;
+  startRecording(REC);
+  showPanel({ mode: 'listening', reply: 'Listening… speak, then pause.' });
+  busy = true; // block re-entry while recording
 }
+
+let voiceActive = false;
 
 if (!app.requestSingleInstanceLock()) {
   app.quit();

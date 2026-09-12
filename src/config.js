@@ -14,6 +14,7 @@ const DEFAULTS = {
   memoryTail: 20,
   memoryPath: '~/.deskmate/memory.jsonl',
   overlayMs: 6000,
+  ttsEnabled: true,
 };
 
 function configPath() {

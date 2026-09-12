@@ -108,3 +108,26 @@ async function infer(cfg, request, b64, mime, mem) {
 }
 
 module.exports = { infer };
+
+// v2: speech-to-text via the SAME provider key the user already has.
+// Groq's transcription endpoint (whisper) needs no extra signup. WAV buffer.
+async function transcribe(cfg, wavBuffer) {
+  if (!cfg.apiKey) {
+    throw Object.assign(new Error('Voice input needs an API key in config'), { code: 'E_STT' });
+  }
+  const { Blob, FormData } = await import('node:buffer'); // not global in Electron main
+  const model = cfg.sttModel || 'whisper-large-v3-turbo';
+  const fd = new FormData();
+  fd.append('model', model);
+  fd.append('file', new Blob([wavBuffer], { type: 'audio/wav' }), 'voice.wav');
+  const res = await fetch('https://api.groq.com/openai/v1/audio/transcriptions', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${cfg.apiKey}` },
+    body: fd,
+  });
+  if (!res.ok) {
+    throw Object.assign(new Error(`stt ${res.status}: ${(await res.text()).slice(0, 200)}`), { code: 'E_STT' });
+  }
+  const data = await res.json();
+  return (data.text || '').trim();
+}

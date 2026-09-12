@@ -1,6 +1,6 @@
 'use strict';
 
-const { spawnSync } = require('node:child_process');
+const { spawnSync, spawn } = require('node:child_process');
 
 // Key codes for System Events `key code` (macOS virtual key codes).
 const KEYCODES = {
@@ -108,6 +108,27 @@ function frontmostApp() {
   return osa('tell application "System Events" to get name of first application process whose frontmost is true');
 }
 
+// macOS built-in TTS: zero deps. Text goes as argv (never script-concat).
+// Fire-and-forget so the UI never blocks; kill the previous utterance so
+// rapid replies don't stack/overlap.
+let _sayProc = null;
+function speak(text) {
+  const t = String(text ?? '').slice(0, 400).trim();
+  if (!t) return;
+  try {
+    if (_sayProc && !_sayProc.killed) _sayProc.kill();
+  } catch { /* already dead */ }
+  _sayProc = spawn('/usr/bin/say', [t], { detached: true, stdio: 'ignore' });
+  _sayProc.on('error', () => {}); // e.g. TCC/missing binary — never crash
+  _sayProc.unref();
+}
+
+function stopSpeaking() {
+  if (_sayProc && !_sayProc.killed) {
+    try { _sayProc.kill(); } catch { /* ignore */ }
+  }
+}
+
 function probeAccessibility() {
   try {
     // If we can read the frontmost app, assistive access is granted.
@@ -121,4 +142,4 @@ function probeAccessibility() {
   }
 }
 
-module.exports = { clickAt, pressKeys, typeText, frontmostApp, probeAccessibility, parseCombo };
+module.exports = { clickAt, pressKeys, typeText, frontmostApp, probeAccessibility, parseCombo, speak, stopSpeaking };

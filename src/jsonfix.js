@@ -24,6 +24,7 @@ function normalize(o) {
     text: s(o.text, 500),
     keys: s(o.keys, 40),
     reply: s(o.reply, 1000),
+    followUp: s(o.followUp, 200),
     taskComplete: !!o.taskComplete,
   };
 }
@@ -61,6 +62,7 @@ function parse(raw) {
     text: g('text'),
     keys: g('keys'),
     reply: g('reply'),
+    followUp: g('followUp'),
     taskComplete: /taskComplete"?\s*[:=]\s*true/i.test(t),
   });
 }

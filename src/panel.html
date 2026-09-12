@@ -9,23 +9,31 @@
   * { margin: 0; padding: 0; box-sizing: border-box; }
   body {
     font: 13px/1.5 -apple-system, "SF Mono", Menlo, monospace;
-    background: #fff8f4; color: #4a3f38;
-    border: 1px solid #f0e2d8; border-radius: 12px; overflow: hidden; user-select: none; -webkit-user-select: none;
+    background: rgba(255, 248, 244, 0.82);
+    backdrop-filter: blur(18px);
+    -webkit-backdrop-filter: blur(18px);
+    color: #4a3f38;
+    border: 1px solid rgba(240, 226, 216, 0.9); border-radius: 12px; overflow: hidden; user-select: none; -webkit-user-select: none;
   }
-  .wrap { padding: 14px 16px; }
+  .wrap { padding: 14px 16px; -webkit-app-region: drag; }
   h1 { font-size: 11px; font-weight: 600; color: #d97a42; margin-bottom: 8px;
-       letter-spacing: 0.08em; text-transform: uppercase; }
+       letter-spacing: 0.08em; text-transform: uppercase;
+       -webkit-app-region: drag; cursor: grab; }
   #reply { white-space: pre-wrap; word-break: break-word; max-height: 110px;
-           overflow-y: auto; margin-bottom: 10px; user-select: text; -webkit-user-select: text; }
-  #extra { color: #8a7a70; font-size: 12px; margin-bottom: 10px; word-break: break-word; user-select: text; -webkit-user-select: text; }
+           overflow-y: auto; margin-bottom: 10px; user-select: text; -webkit-user-select: text;
+           -webkit-app-region: no-drag; }
+  #extra { color: #8a7a70; font-size: 12px; margin-bottom: 10px; word-break: break-word; user-select: text; -webkit-user-select: text;
+           -webkit-app-region: no-drag; }
   #copy-row { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
   #copied { color: #4a7c59; font-size: 11px; }
   .row { display: flex; gap: 8px; }
   input { flex: 1; font: inherit; background: #fffdfb; color: #4a3f38;
-          border: 1px solid #ead9cc; border-radius: 6px; padding: 6px 8px; outline: none; }
+          border: 1px solid #ead9cc; border-radius: 6px; padding: 6px 8px; outline: none;
+          -webkit-app-region: no-drag; }
   input:focus { border-color: #d97a42; }
   button { font: 600 12px inherit; border: 1px solid #ead9cc; background: #f6ece2;
-           color: #4a3f38; border-radius: 6px; padding: 6px 12px; cursor: pointer; }
+           color: #4a3f38; border-radius: 6px; padding: 6px 12px; cursor: pointer;
+           -webkit-app-region: no-drag; }
   button:hover { background: #eedfd0; }
   button.primary { background: #d97a42; border-color: #d97a42; color: #fff8f4; }
   .hidden { display: none !important; }
@@ -42,6 +50,8 @@
   <div id="extra" class="hidden"></div>
   <div id="input-row" class="row hidden">
     <input id="ask" placeholder="What do you want to know or do? (optional)" maxlength="1000"/>
+    <button id="ptt-btn" title="Hold to talk">🎤</button>
+    <button id="mute-btn" title="Mute voice replies">🔊</button>
     <button id="ask-btn" class="primary">Ask</button>
   </div>
   <div id="action-row" class="row hidden">
@@ -60,14 +70,15 @@
   window.deskmate.onState((s) => { state = s; render(s); });
 
   function render(s) {
-    $('title').textContent = 'deskmate' + (s.mode === 'thinking' ? ' — thinking…' : '');
+    $('title').textContent = 'deskmate' + (s.mode === 'thinking' ? ' — thinking…' : s.mode === 'listening' ? ' — listening…' : '');
     $('reply').textContent = s.reply || '';
     $('reply').classList.toggle('hidden', s.mode === 'input');
     $('copy-row').classList.toggle('hidden', !(s.reply || s.mode === 'action' || s.mode === 'info'));
     // input box stays available under every reply/error so the user can
     // keep asking without re-pressing the hotkey. Hidden only while the
     // model is thinking (new question would be dropped) and in action mode
-    // (confirm/cancel must be decided first).
+    // (confirm/cancel must be decided first). During listening, keep it
+    // visible so typing is a fallback.
     $('input-row').classList.toggle('hidden', s.mode === 'thinking' || s.mode === 'action');
     $('action-row').classList.toggle('hidden', s.mode !== 'action');
     $('settings-row').classList.toggle('hidden', s.mode !== 'error' || !/E_PERM/.test(s.code || ''));
@@ -90,6 +101,20 @@
   function cancel() { window.deskmate.cancel(); }
 
   $('ask-btn').onclick = submit;
+  // v2 voice: hold the mic to talk, release to send. Mute toggle in localStorage.
+  const muteBtn = $('mute-btn');
+  let muted = localStorage.getItem('dm-muted') === '1';
+  const syncMute = () => { muteBtn.textContent = muted ? '🔇' : '🔊'; };
+  syncMute();
+  muteBtn.onclick = () => { muted = !muted; localStorage.setItem('dm-muted', muted ? '1' : '0'); syncMute(); };
+  const ptt = $('ptt-btn');
+  let pttDown = false;
+  const press = () => { if (pttDown || muted) return; pttDown = true; ptt.textContent = '🎙️'; window.deskmate.voiceStart(); };
+  const release = () => { if (!pttDown) return; pttDown = false; ptt.textContent = '🎤'; window.deskmate.voiceStop(); };
+  ptt.addEventListener('pointerdown', press);
+  ptt.addEventListener('pointerup', release);
+  ptt.addEventListener('pointerleave', release);
+  ptt.addEventListener('contextmenu', (e) => e.preventDefault());
   $('copy-btn').onclick = async () => {
     const text = (state && state.reply) || '';
     if (!text) return;

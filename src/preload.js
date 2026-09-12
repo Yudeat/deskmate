@@ -8,6 +8,8 @@ contextBridge.exposeInMainWorld('deskmate', {
   submit: (text) => ipcRenderer.send('panel:submit', String(text || '').slice(0, 1000)),
   confirm: () => ipcRenderer.send('panel:confirm'),
   cancel: () => ipcRenderer.send('panel:cancel'),
+  voiceStart: () => ipcRenderer.send('voice:start'),
+  voiceStop: () => ipcRenderer.send('voice:stop'),
   openSettings: (pane) => ipcRenderer.send('open:settings', String(pane || '')),
   onState: (fn) => ipcRenderer.on('panel:state', (_e, s) => fn(s)),
 });
