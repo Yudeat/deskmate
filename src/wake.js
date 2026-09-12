@@ -24,7 +24,7 @@ function buildMatcher(wakeWord) {
   const w = (wakeWord || 'deskmate').toLowerCase();
   // Acoustic/typo variants. The model has produced "Deskmate" AND
   // "Descmate" (missing k), so exact variants + fuzzy edit-distance-1.
-  const exact = [w, 'desk mate', 'deskmat', 'desk mat', 'thanks mate', 'thanx mate', 'thanks, mate', 'thanksmate'];
+  const exact = [w, 'desk mate', 'deskmat', 'desk mat', 'deskmay', 'desk may', 'desk me', 'thanks mate', 'thanx mate', 'thanks, mate', 'thanksmate'];
   const sorted = exact.sort((a, b) => b.length - a.length);
   return { list: sorted, fuzzy: w };
 }
@@ -80,9 +80,10 @@ function startWake(onCommand, cfg, onWake, onSleep) {
     // Echo guard: while TTS is speaking, the mic picks up the reply and
     // whisper would transcribe it as a new command — infinite loop. Drop
     // anything heard during speech (we saw "Yeah. Yeah." echoes in logs).
-    // Also drop for 2s AFTER TTS ends — the echo lingers in the room and
-    // whisper may transcribe the tail end of the answer late.
-    if (exec.isSpeaking() || Date.now() - exec.lastSpeakEnd() < 2000) return;
+    // Also drop for 5s AFTER TTS ends — the echo lingers in the room and
+    // whisper may transcribe the tail end of the answer late (seen live:
+    // an "Opening." echo became a command ~2s after TTS finished).
+    if (exec.isSpeaking() || Date.now() - exec.lastSpeakEnd() < 5000) return;
     const events = {
       awake: () => { if (onWake) onWake(); },
       sleep: () => { if (onSleep) onSleep(); },

@@ -61,6 +61,12 @@ test('fuzzy: Descmate (typo) still wakes', () => {
   assert.deepEqual(events, ['CMD:what is the time?']);
 });
 
+test('Desk may (real-speech variant) wakes', () => {
+  const { state, events } = run(['Desk may play shape of you on youtube']);
+  assert.equal(state.awake, true);
+  assert.deepEqual(events, ['CMD:play shape of you on youtube']);
+});
+
 test('wake word stripped from mid-sentence usage', () => {
   const { state, events } = run(['deskmate can you open safari']);
   assert.deepEqual(events, ['CMD:can you open safari']);
