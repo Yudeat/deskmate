@@ -131,7 +131,10 @@ function playMedia(query) {
   return q;
 }
 function stopMedia() {
-  if (_mpvProc) { try { _mpvProc.kill(); } catch {} _mpvProc = null; }
+  // mpv is spawned detached+unref'd, so the child handle can't always kill it.
+  // pkill by binary name — kills any playing mpv, whatever spawned it.
+  try { spawnSync('pkill', ['-f', 'mpv'], { timeout: 5000 }); } catch {}
+  _mpvProc = null;
 }
 function openUrl(target) {
   const t = String(target ?? '').trim();

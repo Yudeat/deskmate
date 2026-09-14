@@ -171,9 +171,10 @@ async function commandText(cfg, request, memoryLines) {
     ? memoryLines.map((m) => `- ${m.ts} ${m.app ? '[' + m.app + ']' : ''} req="${m.req || ''}" reply="${m.reply || ''}"`).join('\n')
     : 'none';
   const system = `You are deskmate, a macOS assistant. Decide the single best action for the user's request and respond with ONLY valid JSON (no prose):
-Schema: {"intent":"OPEN|PLAY|TYPE|KEYS|ANSWER","x":-1,"y":-1,"label":"","text":"","keys":"","url":"","reply":"","followUp":""}
+Schema: {"intent":"OPEN|PLAY|STOP|TYPE|KEYS|ANSWER","x":-1,"y":-1,"label":"","text":"","keys":"","url":"","reply":"","followUp":""}
 Rules:
 - PLAY: play music/a song/video NOW. Use intent PLAY for "play <song>", "play music", "play <song> by <artist>". Put the search query in "text" (e.g. "shape of you" or "shape of you ed sheeran"). The app plays the top result via mpv. No url, no x/y.
+- STOP: stop/pause the music that is playing NOW. Use intent STOP for "stop the music/song", "stop playing", "pause the music", "shut up". Nothing else needed — the app kills the player.
 - OPEN: open a URL/app via /usr/bin/open. "url" holds the full URL. "play <song> on youtube" (song NAMED) → use PLAY instead (plays directly). If NO specific song/topic is named ("play a song", "play music", "play something"), use https://www.youtube.com/. "open gmail" → https://mail.google.com. Use intent OPEN for web/app-launch NON-music requests. No x,y. NEVER use placeholders like <song+encoded> — always a concrete, valid URL.
 - TYPE: type "text" into the focused field (clipboard paste).
 - KEYS: press a combo like "cmd+shift+p" (use for shortcuts like "play/pause" = "space").

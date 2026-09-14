@@ -1,6 +1,6 @@
 'use strict';
 
-const INTENTS = ['HIGHLIGHT', 'CLICK', 'TYPE', 'KEYS', 'ANSWER', 'OPEN', 'PLAY'];
+const INTENTS = ['HIGHLIGHT', 'CLICK', 'TYPE', 'KEYS', 'ANSWER', 'OPEN', 'PLAY', 'STOP'];
 
 // Any negative coerces to -1 (the "not applicable" sentinel); 0..1000 clamps to range.
 const clamp = (n) => {

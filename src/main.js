@@ -274,6 +274,18 @@ function renderResult(p) {
     }
     return;
   }
+  // STOP is direct too — kill whatever mpv is playing.
+  if (p.intent === 'STOP') {
+    try {
+      exec.stopMedia();
+      const msg = p.reply || 'Stopped.';
+      showPanel({ mode: 'info', reply: msg });
+      if (cfg && cfg.ttsEnabled) exec.speak(msg);
+    } catch (e) {
+      renderError(e);
+    }
+    return;
+  }
   const follow = p.followUp ? `\n\n${p.followUp}` : '';
   if (p.intent === 'CLICK' || p.intent === 'TYPE' || p.intent === 'KEYS') {
     showPanel({ mode: 'action', intent: p.intent, reply: (p.reply || `I'll ${p.intent.toLowerCase()} on your screen.`) + follow, text: p.text, keys: p.keys });
