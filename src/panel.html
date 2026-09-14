@@ -5,42 +5,73 @@
 <title>deskmate</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <style>
-  :root { color-scheme: light; }
+  :root { color-scheme: dark; }
   * { margin: 0; padding: 0; box-sizing: border-box; }
   body {
-    font: 13px/1.5 -apple-system, "SF Mono", Menlo, monospace;
-    background: rgba(255, 248, 244, 0.82);
-    backdrop-filter: blur(18px);
-    -webkit-backdrop-filter: blur(18px);
-    color: #4a3f38;
-    border: 1px solid rgba(240, 226, 216, 0.9); border-radius: 12px; overflow: hidden; user-select: none; -webkit-user-select: none;
+    font: 14px/1.6 -apple-system, "SF Mono", Menlo, monospace;
+    background: transparent;
+    color: #e2e0dc;
+    display: flex; align-items: center; justify-content: center;
+    width: 100vw; height: 100vh;
+    user-select: none; -webkit-user-select: none;
+    cursor: default;
   }
-  .wrap { padding: 14px 16px; -webkit-app-region: drag; }
-  h1 { font-size: 11px; font-weight: 600; color: #d97a42; margin-bottom: 8px;
-       letter-spacing: 0.08em; text-transform: uppercase;
-       -webkit-app-region: drag; cursor: grab; }
-  #reply { white-space: pre-wrap; word-break: break-word; max-height: 110px;
-           overflow-y: auto; margin-bottom: 10px; user-select: text; -webkit-user-select: text;
-           -webkit-app-region: no-drag; }
-  #extra { color: #8a7a70; font-size: 12px; margin-bottom: 10px; word-break: break-word; user-select: text; -webkit-user-select: text;
-           -webkit-app-region: no-drag; }
-  #copy-row { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
-  #copied { color: #4a7c59; font-size: 11px; }
-  .row { display: flex; gap: 8px; }
-  input { flex: 1; font: inherit; background: #fffdfb; color: #4a3f38;
-          border: 1px solid #ead9cc; border-radius: 6px; padding: 6px 8px; outline: none;
-          -webkit-app-region: no-drag; }
-  input:focus { border-color: #d97a42; }
-  button { font: 600 12px inherit; border: 1px solid #ead9cc; background: #f6ece2;
-           color: #4a3f38; border-radius: 6px; padding: 6px 12px; cursor: pointer;
-           -webkit-app-region: no-drag; }
-  button:hover { background: #eedfd0; }
-  button.primary { background: #d97a42; border-color: #d97a42; color: #fff8f4; }
+  .card {
+    width: 560px; max-width: 90vw;
+    background: rgba(15, 23, 42, 0.72);
+    backdrop-filter: blur(22px); -webkit-backdrop-filter: blur(22px);
+    border: 1px solid rgba(34, 211, 238, 0.35);
+    border-radius: 18px;
+    padding: 28px 32px;
+    box-shadow: 0 0 40px 6px rgba(34, 211, 238, 0.18), 0 24px 48px rgba(0,0,0,0.45);
+  }
+  h1 {
+    font-size: 11px; font-weight: 600; color: #22d3ee;
+    letter-spacing: 0.12em; text-transform: uppercase; margin-bottom: 14px;
+  }
+  #reply {
+    white-space: pre-wrap; word-break: break-word;
+    max-height: 360px; overflow-y: auto; margin-bottom: 14px;
+    user-select: text; -webkit-user-select: text;
+    color: #f1f0ee; font-size: 15px; line-height: 1.65;
+  }
+  #extra {
+    color: #94a3b8; font-size: 13px; margin-bottom: 12px;
+    word-break: break-word; user-select: text; -webkit-user-select: text;
+  }
+  #copy-row { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
+  #copied { color: #22d3ee; font-size: 12px; }
+  .row { display: flex; gap: 10px; }
+  input {
+    flex: 1; font: 14px inherit; background: rgba(30, 41, 59, 0.85);
+    color: #f1f0ee; border: 1px solid rgba(34, 211, 238, 0.25);
+    border-radius: 10px; padding: 10px 14px; outline: none;
+    -webkit-app-region: no-drag;
+  }
+  input::placeholder { color: #64748b; }
+  input:focus { border-color: #22d3ee; box-shadow: 0 0 12px rgba(34, 211, 238, 0.25); }
+  button {
+    font: 600 13px inherit; border: 1px solid rgba(34, 211, 238, 0.3);
+    background: rgba(30, 41, 59, 0.85); color: #e2e0dc;
+    border-radius: 10px; padding: 10px 18px; cursor: pointer;
+    -webkit-app-region: no-drag; transition: background 0.15s, border-color 0.15s;
+  }
+  button:hover { background: rgba(34, 211, 238, 0.15); border-color: #22d3ee; }
+  button.primary {
+    background: #22d3ee; border-color: #22d3ee;
+    color: #0f172a; font-weight: 700;
+  }
+  button.primary:hover { background: #38bdf8; }
   .hidden { display: none !important; }
+  /* thinking / listening spinner */
+  .spin { display: inline-block; width: 14px; height: 14px; border: 2px solid rgba(34,211,238,0.3);
+           border-top-color: #22d3ee; border-radius: 50%; animation: spin 0.8s linear infinite;
+           margin-right: 8px; vertical-align: middle; }
+  @keyframes spin { to { transform: rotate(360deg); } }
 </style>
 </head>
 <body>
-<div class="wrap">
+<div class="card" id="card">
   <h1 id="title">deskmate</h1>
   <div id="reply"></div>
   <div id="copy-row" class="hidden">
@@ -49,7 +80,7 @@
   </div>
   <div id="extra" class="hidden"></div>
   <div id="input-row" class="row hidden">
-    <input id="ask" placeholder="What do you want to know or do? (optional)" maxlength="1000"/>
+    <input id="ask" placeholder="Ask deskmate anything…" maxlength="1000" autocomplete="off" spellcheck="false" />
     <button id="ptt-btn" title="Hold to talk">🎤</button>
     <button id="mute-btn" title="Mute voice replies">🔊</button>
     <button id="ask-btn" class="primary">Ask</button>
@@ -70,15 +101,15 @@
   window.deskmate.onState((s) => { state = s; render(s); });
 
   function render(s) {
-    $('title').textContent = 'deskmate' + (s.mode === 'thinking' ? ' — thinking…' : s.mode === 'listening' ? ' — listening…' : '');
+    const label = s.mode === 'thinking' ? 'Thinking…'
+                : s.mode === 'listening' ? 'Listening…'
+                : '';
+    $('title').innerHTML = label
+      ? '<span class="spin"></span> deskmate — ' + label
+      : 'deskmate';
     $('reply').textContent = s.reply || '';
     $('reply').classList.toggle('hidden', s.mode === 'input');
     $('copy-row').classList.toggle('hidden', !(s.reply || s.mode === 'action' || s.mode === 'info'));
-    // input box stays available under every reply/error so the user can
-    // keep asking without re-pressing the hotkey. Hidden only while the
-    // model is thinking (new question would be dropped) and in action mode
-    // (confirm/cancel must be decided first). During listening, keep it
-    // visible so typing is a fallback.
     $('input-row').classList.toggle('hidden', s.mode === 'thinking' || s.mode === 'action');
     $('action-row').classList.toggle('hidden', s.mode !== 'action');
     $('settings-row').classList.toggle('hidden', s.mode !== 'error' || !/E_PERM/.test(s.code || ''));
@@ -90,18 +121,21 @@
     }
     $('extra').classList.toggle('hidden', s.mode !== 'action');
     if (s.mode === 'input') $('ask').focus();
-    // keep asking without the hotkey: give the box focus under the reply too
     if (s.mode === 'info' || s.mode === 'error') $('ask').focus();
   }
 
   function submit() {
     window.deskmate.submit($('ask').value);
-    $('ask').value = ''; // clear so the next question starts fresh
+    $('ask').value = '';
   }
   function cancel() { window.deskmate.cancel(); }
 
+  // click on dark background (not the card) to dismiss
+  document.body.addEventListener('mousedown', (e) => {
+    if (e.target === document.body) cancel();
+  });
+
   $('ask-btn').onclick = submit;
-  // v2 voice: hold the mic to talk, release to send. Mute toggle in localStorage.
   const muteBtn = $('mute-btn');
   let muted = localStorage.getItem('dm-muted') === '1';
   const syncMute = () => { muteBtn.textContent = muted ? '🔇' : '🔊'; };
@@ -118,21 +152,13 @@
   $('copy-btn').onclick = async () => {
     const text = (state && state.reply) || '';
     if (!text) return;
-    try {
-      await navigator.clipboard.writeText(text);
-    } catch {
-      // fallback: select + execCommand (no clipboard permission in some sandboxes)
-      const r = $('reply');
-      const sel = window.getSelection();
-      const range = document.createRange();
-      range.selectNodeContents(r);
-      sel.removeAllRanges();
-      sel.addRange(range);
-      document.execCommand('copy');
-      sel.removeAllRanges();
+    try { await navigator.clipboard.writeText(text); }
+    catch {
+      const r = $('reply'); const sel = window.getSelection(); const range = document.createRange();
+      range.selectNodeContents(r); sel.removeAllRanges(); sel.addRange(range);
+      document.execCommand('copy'); sel.removeAllRanges();
     }
-    $('copied').classList.remove('hidden');
-    setTimeout(() => $('copied').classList.add('hidden'), 1500);
+    $('copied').classList.remove('hidden'); setTimeout(() => $('copied').classList.add('hidden'), 1500);
   };
   $('ask').addEventListener('keydown', (e) => {
     if (e.key === 'Enter') submit();

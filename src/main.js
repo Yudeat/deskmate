@@ -51,20 +51,7 @@ function closeOverlay() {
   overlayWin = null;
 }
 
-function clampToDisplay(work, cx, cy, w, h) {
-  const x = Math.max(work.x + 8, Math.min(cx + 16, work.x + work.width - w - 8));
-  const y = Math.max(work.y + 8, Math.min(cy + 16, work.y + work.height - h - 8));
-  return { x: Math.round(x), y: Math.round(y) };
-}
-
-function positionPanel() {
-  if (!panelWin) return;
-  const pt = screen.getCursorScreenPoint();
-  const display = screen.getDisplayNearestPoint(pt);
-  const { width: w, height: h } = panelWin.getBounds();
-  const pos = clampToDisplay(display.workArea, pt.x, pt.y, w, h);
-  panelWin.setPosition(pos.x, pos.y);
-}
+// ---- panel window: full-screen frosted overlay, centered card via CSS ----
 
 function pushPanel() {
   if (panelWin && !panelWin.isDestroyed()) panelWin.webContents.send('panel:state', panelPending);
@@ -73,29 +60,30 @@ function pushPanel() {
 function showPanel(state) {
   panelPending = state;
   if (!panelWin) {
+    // full-screen window on the active display; transparent background,
+    // click-through on the dark backdrop (card handles its own clicks)
+    const pt = screen.getCursorScreenPoint();
+    const display = screen.getDisplayNearestPoint(pt);
     panelWin = new BrowserWindow({
       ...WEB,
-      width: 430, height: 180,
+      x: display.bounds.x, y: display.bounds.y,
+      width: display.bounds.width, height: display.bounds.height,
       frame: false, transparent: true, backgroundColor: '#00000000',
-      alwaysOnTop: true, skipTaskbar: true, resizable: false, hasShadow: true, show: false,
+      alwaysOnTop: true, skipTaskbar: true, resizable: false, hasShadow: false,
+      show: false,
     });
     panelWin.on('closed', () => { panelWin = null; panelPending = null; });
-    // window close (Escape, cancel, close) must drop any pending action
     panelWin.on('close', () => { pendingAction = null; });
-    // no blur-close: clicking another app must not destroy the panel,
-    // or the second ask is silently killed.
     panelWin.webContents.once('did-finish-load', pushPanel);
     panelWin.loadFile(path.join(__dirname, 'panel.html'));
   } else {
     pushPanel();
   }
-  positionPanel();
   if (!panelWin.isDestroyed()) {
     panelWin.show();
-    // Focus in input mode AND when showing a reply/error with a live input
-    // box, so the user can type the next question straight away without
-    // re-pressing the hotkey. Skip focus only while thinking / action-confirm.
-    if (state.mode === 'input' || state.mode === 'info' || state.mode === 'error') panelWin.focus();
+    // Focus the input box so the user can type or press Enter / Esc.
+    // Skip focus while thinking / action-confirm.
+    if (state.mode === 'input' || state.mode === 'info' || state.mode === 'error' || state.mode === 'listening') panelWin.focus();
   }
 }
 
@@ -116,6 +104,30 @@ function showOverlay(p, display) {
     },
   });
   overlayWin.once('ready-to-show', () => { if (overlayWin) overlayWin.show(); });
+}
+
+// ---- v2.5: full-screen "halo" — the border lights up when the agent activates ----
+let haloWin = null;
+function showHalo(mode) {
+  // single halo covering the display under the cursor (like the overlay)
+  closeHalo();
+  const pt = screen.getCursorScreenPoint();
+  const display = screen.getDisplayNearestPoint(pt);
+  haloWin = new BrowserWindow({
+    ...WEB,
+    x: display.bounds.x, y: display.bounds.y,
+    width: display.bounds.width, height: display.bounds.height,
+    frame: false, transparent: true, backgroundColor: '#00000000',
+    alwaysOnTop: true, skipTaskbar: true, resizable: false, hasShadow: false, focusable: false, show: false,
+  });
+  haloWin.setAlwaysOnTop(true, 'screen-saver');
+  haloWin.setIgnoreMouseEvents(true); // glow never blocks clicks
+  haloWin.loadFile(path.join(__dirname, 'halo.html'), { query: { mode: String(mode || 'active') } });
+  haloWin.once('ready-to-show', () => { if (haloWin) haloWin.show(); });
+}
+function closeHalo() {
+  if (haloWin && !haloWin.isDestroyed()) haloWin.close();
+  haloWin = null;
 }
 
 // ---- capture ----
@@ -224,6 +236,7 @@ async function runPipeline(request, opts = {}) {
 
 function renderResult(p) {
   exec.stopSpeaking();
+  closeHalo(); // the border glow was for activation — dim it once we answer
   if (p.x >= 0 && p.y >= 0 && lastDisplay && ['HIGHLIGHT', 'CLICK'].includes(p.intent)) {
     showOverlay(p, lastDisplay);
   }
@@ -282,6 +295,7 @@ const ERR_HINTS = {
 
 function renderError(e) {
   console.error(`[error] ${e.code || 'E_UNKNOWN'}: ${String(e.message).slice(0, 200)}`);
+  closeHalo(); // error = not active; the border goes off
   const hint = ERR_HINTS[e.code] || 'Unexpected error.';
   const detail = e.message && e.message !== hint ? `\n\n${e.message}` : '';
   showPanel({ mode: 'error', code: e.code, reply: hint + detail });
@@ -310,6 +324,7 @@ async function executeAction(p) {
 function closeAll() {
   closePanel();
   closeOverlay();
+  closeHalo();
 }
 
 // ---- v2: voice recording (ffmpeg, zero deps) + TTS wiring ----
@@ -491,6 +506,7 @@ function onHotkey() {
   voiceActive = true;
   startRecording(REC);
   showPanel({ mode: 'listening', reply: 'Listening… speak, then pause.' });
+  showHalo('listening'); // border lights up when the agent is listening
   busy = true; // block re-entry while recording
 }
 
@@ -527,12 +543,15 @@ if (!app.requestSingleInstanceLock()) {
             showPanel({ mode: 'thinking', reply: 'Working…' });
             runPipeline(req);
           }, cfg, () => {
-            // wake word heard → instant ack so the user knows it's listening
+            // wake word heard → border lights up + instant ack so the user
+            // knows it's listening
+            showHalo('yo');
             exec.speak('Yo');
           }, () => {
-            // sleep word heard → ack + the wake loop goes quiet
+            // sleep word heard → ack + the border goes off + loop goes quiet
             exec.speak('Bye');
             closePanel();
+            closeHalo();
           });
         } catch (e) {
           console.error('wake:', e.message);
