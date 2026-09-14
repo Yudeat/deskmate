@@ -59,7 +59,11 @@ function build(cfg, request, b64, mime, mem) {
       };
     }
     case 'ollama': {
-      const model = cfg.model || 'minicpm-v';
+      // visionModel is separate from cfg.model: the text-only command
+      // path uses the text model (llama3.2), but sending an image to a
+      // non-multimodal model throws 400. visionModel defaults to
+      // minicpm-v (multimodal, slow on M1 but correct).
+      const model = cfg.visionModel || cfg.model || 'minicpm-v';
       return {
         url: 'http://localhost:11434/api/chat',
         headers: { 'Content-Type': 'application/json' },
