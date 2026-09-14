@@ -23,6 +23,7 @@ let stepCount = 0; // task-loop step cap
 let lastActionKey = null; // stuck-loop guard: same action twice in a row
 let lastActionRepeats = 0;
 let activeRequest = ''; // the current request — queried by PLAY/OPEN handlers
+let voiceActive = false; // push-to-talk / VAD is live
 
 // ---- renderer hardening: every window gets sandbox + context isolation ----
 const WEB = {
