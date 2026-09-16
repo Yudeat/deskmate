@@ -305,6 +305,13 @@ function renderResult(p) {
     return;
   }
   const follow = p.followUp ? `\n\n${p.followUp}` : '';
+  if (p.intent === 'RUN') {
+    // RUN always goes through the confirm gate — the user sees the exact
+    // command and approves it. Never "just do it" for shell.
+    showPanel({ mode: 'action', intent: 'RUN', reply: (p.reply || `Run: ${p.text || ''}`), text: p.text });
+    if (cfg && cfg.ttsEnabled) exec.speak(p.reply || 'I have a command ready — approve it in the panel.');
+    return;
+  }
   if (p.intent === 'CLICK' || p.intent === 'TYPE' || p.intent === 'KEYS') {
     showPanel({ mode: 'action', intent: p.intent, reply: (p.reply || `I'll ${p.intent.toLowerCase()} on your screen.`) + follow, text: p.text, keys: p.keys });
     if (cfg && cfg.ttsEnabled) exec.speak((p.reply || `I'll ${p.intent.toLowerCase()} on your screen.`) + (p.followUp ? ' ' + p.followUp : ''));
@@ -345,6 +352,7 @@ async function executeAction(p) {
     case 'CLICK': return exec.clickAt(b.x + (p.x / 1000) * b.width, b.y + (p.y / 1000) * b.height);
     case 'TYPE': return exec.typeText(p.text);
     case 'KEYS': return exec.pressKeys(p.keys);
+    case 'RUN': return exec.runCommand(p.text);
     default:
       // Non-action intents (HIGHLIGHT/ANSWER) should never reach execution;
       // if one does (race/corrupt state), fail loudly instead of "succeeding".
@@ -484,7 +492,18 @@ ipcMain.on('panel:confirm', async () => {
   if (!p) return;
   closeOverlay();
   try {
-    await executeAction(p);
+    const result = await executeAction(p);
+
+    // RUN is terminal: show the command output, don't re-screenshot / loop
+    // (shell doesn't change the screen, so the 3-step vision loop is wrong).
+    if (p.intent === 'RUN') {
+      stepCount = 0; lastActionKey = null; lastActionRepeats = 0;
+      const out = result && result.output ? result.output : '';
+      const head = `$ ${p.text}\n`;
+      showPanel({ mode: 'info', reply: (head + (out || '(no output)')).slice(0, 3000) });
+      if (cfg && cfg.ttsEnabled) exec.speak(result && result.code === 0 ? 'Done.' : 'That command returned an error — check the panel.');
+      return;
+    }
 
     stepCount += 1;
     if (!p.taskComplete && stepCount < 3) {

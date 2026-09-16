@@ -136,6 +136,52 @@ function stopMedia() {
   try { spawnSync('pkill', ['-f', 'mpv'], { timeout: 5000 }); } catch {}
   _mpvProc = null;
 }
+// RUN: shell command on the user's behalf. ALWAYS behind the in-app confirm
+// gate (the user sees the exact command and approves it) — that gate is the
+// security boundary, not optional. Belt-and-braces: a blocklist of
+// catastrophic patterns so a misheard/misapproved command can't nuke the box.
+// Runs via /bin/bash -lc (login shell: PATH like the user's terminal).
+const RUN_BLOCK = [
+  /\brm\s+(-[a-zA-Z]+\s+)*\/(\s|$)/,      // rm -rf /
+  /\bsudo\b/,                              // no privilege escalation from voice
+  /\bdd\b.*of=\/dev\//,                    // dd to a raw device
+  /\bmkfs(\.\w+)?\b/,                      // format
+  /\bdiskutil\s+(erase|reformat|zeroDisk)/,
+  /:\s*\(\s*\)\s*\{.*\}\s*;\s*:/,          // fork bomb
+  /\b(shutdown|reboot|halt)\b/,
+  /\b(curl|wget)\b[^|]*\|\s*(ba|z|da)?sh\b/,  // curl | sh
+  /\bchmod\s+-R\s+777\s+\//,
+  />\s*\/dev\/(disk|rdisk)/,
+];
+function runCommand(cmd, timeoutMs = 60000) {
+  const c = String(cmd ?? '').trim();
+  if (!c) throw Object.assign(new Error('empty command'), { code: 'E_EXEC' });
+  for (const re of RUN_BLOCK) {
+    if (re.test(c)) throw Object.assign(new Error(`blocked unsafe command: ${c}`), { code: 'E_EXEC' });
+  }
+  return new Promise((resolve, reject) => {
+    const p = spawn('/bin/bash', ['-lc', c], { stdio: ['ignore', 'pipe', 'pipe'] });
+    let out = '';
+    let err = '';
+    let done = false;
+    const timer = setTimeout(() => {
+      if (done) return;
+      done = true;
+      try { p.kill('SIGKILL'); } catch {}
+      reject(Object.assign(new Error(`command timed out after ${timeoutMs / 1000}s`), { code: 'E_EXEC' }));
+    }, timeoutMs);
+    p.stdout.on('data', (d) => { out += d.toString(); });
+    p.stderr.on('data', (d) => { err += d.toString(); });
+    p.on('error', (e) => { if (done) return; done = true; clearTimeout(timer); reject(Object.assign(new Error(e.message), { code: 'E_EXEC' })); });
+    p.on('close', (code) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      const body = (out + (err ? '\n' + err : '')).trim();
+      resolve({ code, output: body.slice(0, 4000) }); // cap so a huge dump can't flood the panel
+    });
+  });
+}
 function openUrl(target) {
   const t = String(target ?? '').trim();
   if (!t) return '';
@@ -196,4 +242,4 @@ function probeAccessibility() {
   }
 }
 
-module.exports = { clickAt, pressKeys, typeText, frontmostApp, probeAccessibility, parseCombo, speak, stopSpeaking, isSpeaking, lastSpeakEnd, openUrl, playMedia, stopMedia };
+module.exports = { clickAt, pressKeys, typeText, frontmostApp, probeAccessibility, parseCombo, speak, stopSpeaking, isSpeaking, lastSpeakEnd, openUrl, playMedia, stopMedia, runCommand };

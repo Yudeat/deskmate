@@ -37,7 +37,8 @@
   }
   #extra {
     color: #94a3b8; font-size: 13px; margin-bottom: 12px;
-    word-break: break-word; user-select: text; -webkit-user-select: text;
+    word-break: break-word; white-space: pre-wrap;
+    user-select: text; -webkit-user-select: text;
   }
   #copy-row { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
   #copied { color: #22d3ee; font-size: 12px; }
@@ -116,6 +117,7 @@
     if (s.mode === 'action') {
       $('extra').textContent =
         s.intent === 'TYPE' ? 'Will type: "' + (s.text || '') + '"' :
+        s.intent === 'RUN' ? 'Will run:\n$ ' + (s.text || '') :
         s.intent === 'KEYS' ? 'Will press: ' + (s.keys || '') :
         'Will click the highlighted point';
     }

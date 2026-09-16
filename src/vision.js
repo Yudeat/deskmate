@@ -171,8 +171,9 @@ async function commandText(cfg, request, memoryLines) {
     ? memoryLines.map((m) => `- ${m.ts} ${m.app ? '[' + m.app + ']' : ''} req="${m.req || ''}" reply="${m.reply || ''}"`).join('\n')
     : 'none';
   const system = `You are deskmate, a macOS assistant. Decide the single best action for the user's request and respond with ONLY valid JSON (no prose):
-Schema: {"intent":"OPEN|PLAY|STOP|MAIL|TYPE|KEYS|ANSWER","x":-1,"y":-1,"label":"","text":"","keys":"","url":"","reply":"","followUp":""}
+Schema: {"intent":"OPEN|PLAY|STOP|MAIL|RUN|TYPE|KEYS|ANSWER","x":-1,"y":-1,"label":"","text":"","keys":"","url":"","reply":"","followUp":""}
 Rules:
+- RUN: run a shell command on the user's Mac. Put the EXACT command in "text" (bash). Use RUN for anything done in a terminal: git, npm, ffmpeg, brew, ls, python scripts, build/test commands, opening a file with a CLI tool, managing processes. The user sees the command and must approve it before it runs. "reply" is a 1-line summary. No x/y, no url. Prefer RUN over CLICK/TYPE/KEYS for anything that has a shell equivalent — it's faster and more reliable than clicking.
 - PLAY: play music/a song/video NOW. Use intent PLAY for "play <song>", "play music", "play <song> by <artist>". Put the search query in "text" (e.g. "shape of you" or "shape of you ed sheeran"). The app plays the top result via mpv. No url, no x/y.
 - STOP: stop/pause the music that is playing NOW. Use intent STOP for "stop the music/song", "stop playing", "pause the music", "shut up". Nothing else needed — the app kills the player.
 - MAIL: write/send an email. Put the FULL professional email body in "text" (complete, ready to send, formal). Put the recipient address in "url". "reply" is a 1-line summary. The app opens a pre-filled draft in Mail.app for the user to send. Use MAIL for "write an email to X", "send a mail to Y", "email someone". Example: "email yudeat8@gmail.com about a job inquiry" → url="yudeat8@gmail.com", text="Dear Hiring Team,\n\n..." — never OPEN for email requests.
