@@ -17,7 +17,7 @@ const DEFAULTS = {
   ttsEnabled: true,
   wakeEnabled: true,
   wakeWord: 'deskmate',
-  wakeModel: '/opt/homebrew/share/whisper.cpp/models/ggml-base.en.bin',
+  wakeModel: '/opt/homebrew/share/whisper.cpp/models/ggml-small.en.bin',
   visionModel: 'minicpm-v', // separate from cfg.model (text): vision needs a multimodal model
   wakeCapture: 1,
   wakeCommandMs: 6000,
