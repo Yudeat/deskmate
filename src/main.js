@@ -286,6 +286,24 @@ function renderResult(p) {
     }
     return;
   }
+  // MAIL: build a mailto: draft (to, subject, body) and open it in Mail.app.
+  // The user reviews + clicks Send — deskmate has no SMTP/Gmail API.
+  if (p.intent === 'MAIL') {
+    try {
+      const to = String(p.url || '').trim().replace(/^mailto:/i, '');
+      const body = String(p.text || p.reply || '').trim();
+      if (!to || !body) throw Object.assign(new Error('model returned no recipient or body for MAIL'), { code: 'E_EXEC' });
+      const subject = String(p.label || 'Job Inquiry').trim();
+      const mailto = `mailto:${encodeURIComponent(to)}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
+      exec.openUrl(mailto);
+      const msg = p.reply || `Opened a draft for ${to} — review and hit Send.`;
+      showPanel({ mode: 'info', reply: msg });
+      if (cfg && cfg.ttsEnabled) exec.speak(msg);
+    } catch (e) {
+      renderError(e);
+    }
+    return;
+  }
   const follow = p.followUp ? `\n\n${p.followUp}` : '';
   if (p.intent === 'CLICK' || p.intent === 'TYPE' || p.intent === 'KEYS') {
     showPanel({ mode: 'action', intent: p.intent, reply: (p.reply || `I'll ${p.intent.toLowerCase()} on your screen.`) + follow, text: p.text, keys: p.keys });
