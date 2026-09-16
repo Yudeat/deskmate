@@ -84,14 +84,13 @@ function resolveCaptureIndex(bin, model, name) {
   });
 }
 
-function startWake(onCommand, cfg, onWake, onSleep) {
+function startWake(onCommand, cfg, onSleep) {
   const bin = cfg.wakeBin || 'whisper-stream';
   const model = cfg.wakeModel || '/opt/homebrew/share/whisper.cpp/models/ggml-small.en.bin';
   const matcher = buildMatcher(cfg.wakeWord);
   const base = ['-m', model, '-l', 'en', '--step', '3000', '--length', '4000', '--keep', '1500', '-vth', '0.3', '--keep-context'];
   let proc = null;
   let buf = '';
-  let awake = false; // state machine: asleep until wake word or hotkey
   let stopped = false;
   let captureIdx = null;
 
@@ -106,7 +105,7 @@ function startWake(onCommand, cfg, onWake, onSleep) {
         const raw = buf.slice(0, i).replace(/\x1b\[2K/g, '').replace(/\r/g, '').trim();
         buf = buf.slice(i + 1);
         if (!raw || raw.includes('[BLANK_AUDIO]')) continue;
-        console.error(`[wake] ${awake ? 'awake' : 'asleep'} heard: ${JSON.stringify(raw)}`);
+        console.error(`[wake] heard: ${JSON.stringify(raw)}`);
         handleLine(raw);
       }
     });
@@ -128,14 +127,11 @@ function startWake(onCommand, cfg, onWake, onSleep) {
     const trimmed = line.trim().replace(/^\[Start speaking\]\s*/, '');
     if (trimmed.startsWith('(') && trimmed.endsWith(')')) return; // noise cue: (water splashing), (sighs) — never a command
     if (trimmed.startsWith('[') && trimmed.endsWith(']')) return; // tag: [Silence], [BLANK_AUDIO] — never speech
-    const text = trimmed;
     const events = {
-      awake: () => { if (onWake) onWake(); },
       sleep: () => { if (onSleep) onSleep(); },
       command: (cmd) => onCommand(cmd),
     };
-    const next = classify({ awake }, line, matcher, events);
-    awake = next.awake;
+    classify(null, line, matcher, events);
   };
 
   const boot = async () => {
@@ -158,21 +154,28 @@ function startWake(onCommand, cfg, onWake, onSleep) {
       stopped = true;
       if (proc) { try { proc.kill(); } catch {} proc = null; }
     },
-    setState: (v) => { awake = v; }, // hotkey can wake us without saying the word
   };
 }
 
 module.exports = { startWake, buildMatcher, SLEEP_PHRASES, classify, resolveCaptureIndex };
 
-// Pure state machine — testable without a mic/whisper. Takes the current
-// state and a transcribed line; returns the next state + fires callbacks.
-//   state: { awake: bool }
+// Pure classifier — always-on: every spoken line is a command. A leading
+// wake word ("deskmate ...") is stripped if present (so old habit still
+// works); otherwise the whole line is the command. Sleep phrases ack + the
+// listener keeps running (awake always true — no stuck-asleep trap).
 //   line: whispered text
 //   matcher: buildMatcher() result
-//   events: { awake, sleep, command } called synchronously
-function classify({ awake }, line, matcher, events) {
+//   events: { sleep, command } called synchronously
+function classify(state, line, matcher, events) {
   const lower = line.toLowerCase();
   const sleepPhrase = SLEEP_PHRASES.find((p) => lower.includes(p));
+
+  if (sleepPhrase) {
+    if (events.sleep) events.sleep(); // ack "Bye" — but keep listening
+    return { awake: true };
+  }
+
+  // Strip a leading wake word if present ("deskmate, write an email").
   const wake = (() => {
     for (const v of matcher.list) {
       const idx = lower.indexOf(v);
@@ -180,37 +183,18 @@ function classify({ awake }, line, matcher, events) {
     }
     const words = lower.split(/[^a-z']+/).filter(Boolean);
     for (const word of words) {
-      // Fuzzy only when the word starts with a d-sound (desk- family); kills
-      // false wakes from words like "water"/"that's" that happen to be
-      // dist-2 from "deskmate" by coincidence.
       if (word[0] === matcher.fuzzy[0] && dist1(word, matcher.fuzzy)) return { word, idx: lower.indexOf(word) };
     }
     return null;
   })();
 
-  if (sleepPhrase) {
-    if (awake || wake) {
-      if (events.sleep) events.sleep();
-      return { awake: false };
-    }
-    return { awake };
+  let cmd = line.trim().replace(/^[,\s]+/, '').trim();
+  if (wake && wake.idx <= 2) {
+    cmd = line.slice(wake.idx + wake.word.length).trim().replace(/^[,\s]+/, '').trim();
   }
-
-  if (wake) {
-    const cmd = line.slice(wake.idx + wake.word.length).trim().replace(/^[,\s]+/, '').trim();
-    // Ack only when there's no command in this line — if a command follows,
-    // speaking now would echo into the mic and the echo guard would drop the
-    // real command (we saw this: "Yo" ack raced the command transcription).
-    if (!cmd && events.awake) events.awake();
-    if (cmd && events.command) events.command(cmd);
-    return { awake: true };
-  }
-
-  if (awake && line.trim()) {
-    const cmd = line.trim().replace(/^[,\s]+/, '').trim();
-    if (cmd && events.command) events.command(cmd);
-  }
-  return { awake };
+  // reject punctuation/whitespace-only lines — not a real command
+  if (cmd && /[a-z0-9]/i.test(cmd)) events.command(cmd);
+  return { awake: true };
 }
 
 // self-check: exact + fuzzy matcher catches variants

@@ -581,8 +581,9 @@ if (!app.requestSingleInstanceLock()) {
       cfg = loadConfig();
       const ok = globalShortcut.register(cfg.hotkey, onHotkey);
       if (!ok) console.error('hotkey registration failed:', cfg.hotkey);
-      // Siri-style wake loop: wake word ("deskmate") → awake → commands
-      // until "sleep". Hotkey wakes too. Skip in smoke mode (no mic).
+      // Always-on listener: every spoken line is a command (no wake word
+      // needed — the user talks, it does). Sleep words ack + the border
+      // goes off, but the listener keeps running. Skip in smoke mode.
       if (cfg.wakeEnabled && !process.env.DESKMATE_SMOKE) {
         let wakeStop = null;
         try {
@@ -593,26 +594,13 @@ if (!app.requestSingleInstanceLock()) {
             showPanel({ mode: 'thinking', reply: 'Working…' });
             runPipeline(req);
           }, cfg, () => {
-            // wake word heard → border lights up + instant ack so the user
-            // knows it's listening
-            showHalo('yo');
-            exec.speak('Yo');
-          }, () => {
-            // sleep word heard → ack + the border goes off + loop goes quiet
+            // sleep word heard → ack + the border goes off + listener keeps running
             exec.speak('Bye');
             closePanel();
             closeHalo();
           });
         } catch (e) {
           console.error('wake:', e.message);
-        }
-        // Hotkey wakes the agent without saying the wake word.
-        if (wakeStop) {
-          const origHotkey = onHotkey;
-          onHotkey = () => {
-            wakeStop.setState(true); // awake until told to sleep
-            origHotkey();
-          };
         }
         app.on('will-quit', () => { if (wakeStop) wakeStop.stop(); });
       }
