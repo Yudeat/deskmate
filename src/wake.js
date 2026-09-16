@@ -48,16 +48,56 @@ function dist1(a, b, max = 2) {
 
 const SLEEP_PHRASES = ['sleep', 'go to sleep', 'time to sleep', 'sleep deskmate', 'deskmate sleep', 'go to sleep deskmate', 'sleep now', 'deskmate go to sleep'];
 
+// Resolve the capture index by NAME — SDL's "default" picks whatever is the
+// system default, which turns into Bluetooth earbuds (their mic mangles
+// speech: "deskmate" came out as "Hey, Dutchman"). Indices also shift when
+// devices connect/disconnect, so never hardcode one. Spawn whisper-stream
+// briefly, read its device list, kill it.
+function resolveCaptureIndex(bin, model, name) {
+  return new Promise((resolve) => {
+    if (!name) return resolve(null);
+    const p = spawn(bin, ['-m', model, '-l', 'en'], { stdio: ['ignore', 'ignore', 'pipe'] });
+    let err = '';
+    let settled = false;
+    const finish = (v) => {
+      if (settled) return;
+      settled = true;
+      try { p.kill('SIGKILL'); } catch {}
+      resolve(v);
+    };
+    p.stderr.on('data', (d) => {
+      err += d.toString();
+      const re = /Capture device #(\d+): '([^']+)'/g;
+      const found = [...err.matchAll(re)];
+      if (!found.length) return;
+      // list is complete once "obtained spec" (or processing) appears, or
+      // once we've had the list for a moment and no more lines arrive
+      const match = found.find((m) => m[2].toLowerCase().includes(String(name).toLowerCase()));
+      if (match) finish(Number(match[1]));
+    });
+    p.on('error', () => finish(null));
+    setTimeout(() => {
+      const found = [...err.matchAll(/Capture device #(\d+): '([^']+)'/g)];
+      const match = found.find((m) => m[2].toLowerCase().includes(String(name || '').toLowerCase()));
+      finish(match ? Number(match[1]) : null);
+    }, 4000);
+  });
+}
+
 function startWake(onCommand, cfg, onWake, onSleep) {
   const bin = cfg.wakeBin || 'whisper-stream';
   const model = cfg.wakeModel || '/opt/homebrew/share/whisper.cpp/models/ggml-small.en.bin';
   const matcher = buildMatcher(cfg.wakeWord);
-  const args = ['-m', model, '-l', 'en', '--step', '3000', '--length', '4000', '--keep', '1500', '-vth', '0.3', '--keep-context'];
+  const base = ['-m', model, '-l', 'en', '--step', '3000', '--length', '4000', '--keep', '1500', '-vth', '0.3', '--keep-context'];
   let proc = null;
   let buf = '';
   let awake = false; // state machine: asleep until wake word or hotkey
+  let stopped = false;
+  let captureIdx = null;
 
   const spawnOnce = () => {
+    if (stopped) return;
+    const args = captureIdx == null ? base : [...base, '-c', String(captureIdx)];
     proc = spawn(bin, args, { stdio: ['ignore', 'pipe', 'inherit'] });
     proc.stdout.on('data', (d) => {
       buf += d.toString();
@@ -73,7 +113,7 @@ function startWake(onCommand, cfg, onWake, onSleep) {
     proc.on('error', (e) => console.error('wake:', e.message));
     proc.on('close', () => {
       proc = null;
-      setTimeout(spawnOnce, 2000); // restart after a breather
+      if (!stopped) setTimeout(spawnOnce, 2000); // restart after a breather
     });
   };
 
@@ -98,14 +138,31 @@ function startWake(onCommand, cfg, onWake, onSleep) {
     awake = next.awake;
   };
 
-  spawnOnce();
+  const boot = async () => {
+    const want = cfg.wakeCaptureName || 'MacBook Air Microphone';
+    try {
+      captureIdx = await resolveCaptureIndex(bin, model, want);
+      console.error(`[wake] capture: '${want}' → device #${captureIdx == null ? 'default' : captureIdx}`);
+    } catch (e) {
+      console.error('wake capture probe:', e.message);
+      captureIdx = null;
+    }
+    if (!stopped) spawnOnce(); // first real spawn with the right mic
+  };
+  boot();
+
+  // Resolve the mic index by name — SDL's default picks Bluetooth earbuds
+  // when connected (their mic mangles "deskmate" → "Hey, Dutchman").
   return {
-    stop: () => { if (proc) { try { proc.kill(); } catch {} proc = null; } },
+    stop: () => {
+      stopped = true;
+      if (proc) { try { proc.kill(); } catch {} proc = null; }
+    },
     setState: (v) => { awake = v; }, // hotkey can wake us without saying the word
   };
 }
 
-module.exports = { startWake, buildMatcher, SLEEP_PHRASES, classify };
+module.exports = { startWake, buildMatcher, SLEEP_PHRASES, classify, resolveCaptureIndex };
 
 // Pure state machine — testable without a mic/whisper. Takes the current
 // state and a transcribed line; returns the next state + fires callbacks.
