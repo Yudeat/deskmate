@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>deskmate halo</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  html, body { width: 100%; height: 100%; margin: 0; background: transparent; overflow: hidden; }
+  :root { --glow: #22d3ee; }
+  .halo {
+    position: fixed; inset: 12px;
+    border: 3px solid var(--glow);
+    border-radius: 20px;
+    box-shadow:
+      0 0 24px 4px var(--glow),
+      inset 0 0 24px 4px var(--glow),
+      0 0 80px 12px rgba(34, 211, 238, 0.35);
+    opacity: 0;
+    transition: opacity 0.25s ease;
+    pointer-events: none;
+  }
+  .halo.in { opacity: 1; animation: pulse 2.2s ease-in-out infinite; }
+  @keyframes pulse {
+    0%, 100% { box-shadow: 0 0 24px 4px var(--glow), inset 0 0 24px 4px var(--glow), 0 0 80px 12px rgba(34,211,238,0.35); }
+    50%      { box-shadow: 0 0 34px 8px var(--glow), inset 0 0 34px 8px var(--glow), 0 0 110px 18px rgba(34,211,238,0.55); }
+  }
+  .chip {
+    position: fixed; top: 32px; left: 50%; transform: translateX(-50%);
+    font: 600 14px -apple-system, "SF Mono", Menlo, monospace;
+    color: #fff; text-align: center;
+    background: rgba(15, 23, 42, 0.72);
+    backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+    border: 1px solid rgba(34, 211, 238, 0.5);
+    border-radius: 999px; padding: 8px 20px;
+    box-shadow: 0 0 18px rgba(34, 211, 238, 0.4);
+    opacity: 0; transition: opacity 0.25s ease; pointer-events: none;
+  }
+  .chip.in { opacity: 1; }
+</style>
+</head>
+<body>
+  <div id="glow" class="halo"></div>
+  <div id="chip" class="chip"></div>
+<script>
+  const q = new URLSearchParams(location.search);
+  const mode = q.get('mode') || 'active';
+  const chipText = { listening: 'Listening…', working: 'Working…', yo: 'Yo', bye: 'Bye', done: '' }[mode] || '';
+  const chip = document.getElementById('chip');
+  if (chipText) { chip.textContent = chipText; chip.classList.add('in'); }
+  const glow = document.getElementById('glow');
+  requestAnimationFrame(() => glow.classList.add('in'));
+  // keep the halo alive until the window is closed by main
+  window.addEventListener('beforeunload', () => {});
+</script>
+</body>
+</html>

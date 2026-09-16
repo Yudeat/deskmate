@@ -1,6 +1,6 @@
 'use strict';
 
-const INTENTS = ['HIGHLIGHT', 'CLICK', 'TYPE', 'KEYS', 'ANSWER'];
+const INTENTS = ['HIGHLIGHT', 'CLICK', 'TYPE', 'KEYS', 'ANSWER', 'OPEN', 'PLAY', 'STOP', 'MAIL', 'RUN'];
 
 // Any negative coerces to -1 (the "not applicable" sentinel); 0..1000 clamps to range.
 const clamp = (n) => {
@@ -23,6 +23,7 @@ function normalize(o) {
     label: s(o.label, 120),
     text: s(o.text, 500),
     keys: s(o.keys, 40),
+    url: s(o.url, 512),
     reply: s(o.reply, 1000),
     followUp: s(o.followUp, 200),
     taskComplete: !!o.taskComplete,
@@ -61,6 +62,7 @@ function parse(raw) {
     label: g('label'),
     text: g('text'),
     keys: g('keys'),
+    url: g('url'),
     reply: g('reply'),
     followUp: g('followUp'),
     taskComplete: /taskComplete"?\s*[:=]\s*true/i.test(t),

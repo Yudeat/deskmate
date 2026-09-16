@@ -108,18 +108,117 @@ function frontmostApp() {
   return osa('tell application "System Events" to get name of first application process whose frontmost is true');
 }
 
+// Play media via mpv + yt-dlp (native macOS, plays the TOP youtube result).
+// mpv's builtin ytdl_hook fails on this build ("Cannot open file ytsearch1:"),
+// so resolve the URL via yt-dlp -g ourselves, then hand it to mpv.
+// argv-escaped, never shell-concat. spawn, not spawnSync — mpv is long-lived.
+let _mpvProc = null;
+function playMedia(query) {
+  const q = String(query ?? '').trim().slice(0, 200);
+  if (!q) return '';
+  const resolve = spawnSync('/opt/homebrew/bin/yt-dlp', ['-g', '-f', 'bestaudio', `ytsearch1:${q}`, '--no-playlist'], { encoding: 'utf8', timeout: 60000 });
+  if (resolve.status !== 0 || !resolve.stdout.trim()) {
+    console.error('yt-dlp:', (resolve.stderr || resolve.stdout || '').trim().slice(0, 200));
+    throw Object.assign(new Error('could not resolve media for: ' + q), { code: 'E_EXEC' });
+  }
+  const url = resolve.stdout.trim().split('\n')[0]; // first format URL
+  _mpvProc = spawn('/opt/homebrew/bin/mpv', [url], { stdio: 'ignore', detached: true });
+  _mpvProc.on('error', (e) => {
+    console.error('mpv:', e.message);
+    _mpvProc = null;
+  });
+  _mpvProc.unref();
+  return q;
+}
+function stopMedia() {
+  // mpv is spawned detached+unref'd, so the child handle can't always kill it.
+  // pkill by binary name — kills any playing mpv, whatever spawned it.
+  try { spawnSync('pkill', ['-f', 'mpv'], { timeout: 5000 }); } catch {}
+  _mpvProc = null;
+}
+// RUN: shell command on the user's behalf. ALWAYS behind the in-app confirm
+// gate (the user sees the exact command and approves it) — that gate is the
+// security boundary, not optional. Belt-and-braces: a blocklist of
+// catastrophic patterns so a misheard/misapproved command can't nuke the box.
+// Runs via /bin/bash -lc (login shell: PATH like the user's terminal).
+const RUN_BLOCK = [
+  /\brm\s+(-[a-zA-Z]+\s+)*\/(\s|$)/,      // rm -rf /
+  /\bsudo\b/,                              // no privilege escalation from voice
+  /\bdd\b.*of=\/dev\//,                    // dd to a raw device
+  /\bmkfs(\.\w+)?\b/,                      // format
+  /\bdiskutil\s+(erase|reformat|zeroDisk)/,
+  /:\s*\(\s*\)\s*\{.*\}\s*;\s*:/,          // fork bomb
+  /\b(shutdown|reboot|halt)\b/,
+  /\b(curl|wget)\b[^|]*\|\s*(ba|z|da)?sh\b/,  // curl | sh
+  /\bchmod\s+-R\s+777\s+\//,
+  />\s*\/dev\/(disk|rdisk)/,
+];
+function runCommand(cmd, timeoutMs = 60000) {
+  const c = String(cmd ?? '').trim();
+  if (!c) throw Object.assign(new Error('empty command'), { code: 'E_EXEC' });
+  for (const re of RUN_BLOCK) {
+    if (re.test(c)) throw Object.assign(new Error(`blocked unsafe command: ${c}`), { code: 'E_EXEC' });
+  }
+  return new Promise((resolve, reject) => {
+    const p = spawn('/bin/bash', ['-lc', c], { stdio: ['ignore', 'pipe', 'pipe'] });
+    let out = '';
+    let err = '';
+    let done = false;
+    const timer = setTimeout(() => {
+      if (done) return;
+      done = true;
+      try { p.kill('SIGKILL'); } catch {}
+      reject(Object.assign(new Error(`command timed out after ${timeoutMs / 1000}s`), { code: 'E_EXEC' }));
+    }, timeoutMs);
+    p.stdout.on('data', (d) => { out += d.toString(); });
+    p.stderr.on('data', (d) => { err += d.toString(); });
+    p.on('error', (e) => { if (done) return; done = true; clearTimeout(timer); reject(Object.assign(new Error(e.message), { code: 'E_EXEC' })); });
+    p.on('close', (code) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      const body = (out + (err ? '\n' + err : '')).trim();
+      resolve({ code, output: body.slice(0, 4000) }); // cap so a huge dump can't flood the panel
+    });
+  });
+}
+function openUrl(target) {
+  const t = String(target ?? '').trim();
+  if (!t) return '';
+  if (t.length > 512) throw Object.assign(new Error('target too long'), { code: 'E_EXEC' });
+  // Basic scheme guard: allow http(s), file, or bare app names.
+  if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(t) && !/^[A-Za-z0-9 .-]+$/.test(t)) {
+    throw Object.assign(new Error('unsupported open target'), { code: 'E_EXEC' });
+  }
+  // Reject placeholder/angle-bracket URLs (model echoing prompt examples).
+  if (/<|>/.test(t)) {
+    throw Object.assign(new Error(`invalid open target: ${t.slice(0, 60)}`), { code: 'E_EXEC' });
+  }
+  const r = spawnSync('/usr/bin/open', [t], { encoding: 'utf8', timeout: 8000 });
+  if (r.status !== 0) {
+    throw Object.assign(new Error(`open failed: ${(r.stderr || r.stdout || '').trim().slice(0, 200)}`), { code: 'E_EXEC' });
+  }
+  return (r.stdout || '').trim();
+}
+
 // macOS built-in TTS: zero deps. Text goes as argv (never script-concat).
 // Fire-and-forget so the UI never blocks; kill the previous utterance so
 // rapid replies don't stack/overlap.
 let _sayProc = null;
+let _speaking = false; // echo guard: true while TTS audio is in the air
+let _lastSpeakEnd = 0; // ms epoch when TTS last finished — echo may linger
+function isSpeaking() { return _speaking; }
+function lastSpeakEnd() { return _lastSpeakEnd; }
 function speak(text) {
   const t = String(text ?? '').slice(0, 400).trim();
   if (!t) return;
   try {
     if (_sayProc && !_sayProc.killed) _sayProc.kill();
   } catch { /* already dead */ }
+  _speaking = true;
   _sayProc = spawn('/usr/bin/say', [t], { detached: true, stdio: 'ignore' });
-  _sayProc.on('error', () => {}); // e.g. TCC/missing binary — never crash
+  _sayProc.on('error', () => { _speaking = false; _lastSpeakEnd = Date.now(); }); // e.g. TCC/missing binary — never crash
+  _sayProc.on('exit', () => { _speaking = false; _lastSpeakEnd = Date.now(); });
   _sayProc.unref();
 }
 
@@ -127,6 +226,7 @@ function stopSpeaking() {
   if (_sayProc && !_sayProc.killed) {
     try { _sayProc.kill(); } catch { /* ignore */ }
   }
+  _speaking = false;
 }
 
 function probeAccessibility() {
@@ -142,4 +242,4 @@ function probeAccessibility() {
   }
 }
 
-module.exports = { clickAt, pressKeys, typeText, frontmostApp, probeAccessibility, parseCombo, speak, stopSpeaking };
+module.exports = { clickAt, pressKeys, typeText, frontmostApp, probeAccessibility, parseCombo, speak, stopSpeaking, isSpeaking, lastSpeakEnd, openUrl, playMedia, stopMedia, runCommand };
