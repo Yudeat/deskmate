@@ -59,11 +59,19 @@ function build(cfg, request, b64, mime, mem) {
       };
     }
     case 'ollama': {
-      const model = cfg.model || 'minicpm-v';
+      // visionModel is separate from cfg.model: the text-only command
+      // path uses the text model (llama3.2), but sending an image to a
+      // non-multimodal model throws 400. visionModel defaults to
+      // minicpm-v (multimodal, slow on M1 but correct).
+      const model = cfg.visionModel || cfg.model || 'minicpm-v';
       return {
         url: 'http://localhost:11434/api/chat',
         headers: { 'Content-Type': 'application/json' },
-        body: { model, stream: false, format: 'json', messages: [{ role: 'user', content: prompt, images: [b64] }] },
+        // stream:true — Ollama sends progressive token lines. Chromium's
+        // fetch aborts a connection that idles ~60s waiting for the ONE
+        // big response (stream:false) from a slow local vision model.
+        // Streaming keeps the socket active and works in Electron.
+        body: { model, stream: true, format: 'json', messages: [{ role: 'user', content: prompt, images: [b64] }] },
         extract: (d) => d.message?.content || '',
       };
     }
@@ -74,7 +82,7 @@ function build(cfg, request, b64, mime, mem) {
 
 async function infer(cfg, request, b64, mime, mem) {
   const { url, headers, body, extract } = build(cfg, request, b64, mime, mem);
-  const timeoutMs = cfg.provider === 'ollama' ? 60000 : 30000;
+  const timeoutMs = cfg.provider === 'ollama' ? 240000 : 30000;
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), timeoutMs);
 
@@ -101,13 +109,177 @@ async function infer(cfg, request, b64, mime, mem) {
     throw Object.assign(new Error(`vision ${res.status}: ${detail}`), { code: 'E_VISION' });
   }
 
+  // Ollama with stream:true → NDJSON lines; join all message deltas.
+  // Hold the abort timer across the whole read (stalled streams must die,
+  // or they monopolize Ollama's single-request queue forever).
+  if (body.stream) {
+    const text = await readNdjson(res.body, ctrl);
+    clearTimeout(timer);
+    if (!text) throw Object.assign(new Error('empty model response'), { code: 'E_PARSE' });
+    return text;
+  }
+  clearTimeout(timer);
   const data = await res.json();
   const text = extract(data);
   if (!text) throw Object.assign(new Error('empty model response'), { code: 'E_PARSE' });
   return text;
 }
 
-module.exports = { infer };
+// Reads an NDJSON response body (Ollama stream:true) and joins the
+// message deltas into one string. Keeps consuming lines as they arrive,
+// which is what resets Chromium's idle timer. ctrl (optional) is the
+// abort controller — on timeout the reader is cancelled so the fetch
+// actually dies (not just the timer).
+async function readNdjson(stream, ctrl) {
+  const reader = stream.getReader();
+  const dec = new TextDecoder();
+  let buf = '';
+  let out = '';
+  let aborted = false;
+  if (ctrl) ctrl.signal.addEventListener('abort', () => { aborted = true; reader.cancel(); });
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (aborted) break;
+      buf += dec.decode(value, { stream: true });
+      let i;
+      while ((i = buf.indexOf('\n')) >= 0) {
+        const line = buf.slice(0, i).trim();
+        buf = buf.slice(i + 1);
+        if (!line) continue;
+        try {
+          const d = JSON.parse(line);
+          if (d.message && typeof d.message.content === 'string') out += d.message.content;
+          if (d.done) return out;
+        } catch { /* partial line — skip */ }
+      }
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  return out;
+}
+
+// v2.2: direct-command mode — NO screenshot. The user wants actions done,
+// not described ("play a song on youtube" → OPEN the search URL, don't
+// screenshot-scroll). Routes through the same text-only providers; the
+// model emits the action schema (OPEN/CLICK/TYPE/KEYS/ANSWER) from
+// knowledge alone. Fast (no image) — the default path for most commands.
+async function commandText(cfg, request, memoryLines) {
+  const mem = memoryLines && memoryLines.length
+    ? memoryLines.map((m) => `- ${m.ts} ${m.app ? '[' + m.app + ']' : ''} req="${m.req || ''}" reply="${m.reply || ''}"`).join('\n')
+    : 'none';
+  const system = `You are deskmate, a macOS assistant. Decide the single best action for the user's request and respond with ONLY valid JSON (no prose):
+Schema: {"intent":"OPEN|PLAY|STOP|MAIL|RUN|TYPE|KEYS|ANSWER","x":-1,"y":-1,"label":"","text":"","keys":"","url":"","reply":"","followUp":""}
+Rules:
+- RUN: run a shell command on the user's Mac. Put the EXACT command in "text" (bash). Use RUN for anything done in a terminal: git, npm, ffmpeg, brew, ls, python scripts, build/test commands, opening a file with a CLI tool, managing processes. The user sees the command and must approve it before it runs. "reply" is a 1-line summary. No x/y, no url. Prefer RUN over CLICK/TYPE/KEYS for anything that has a shell equivalent — it's faster and more reliable than clicking.
+- PLAY: play music/a song/video NOW. Use intent PLAY for "play <song>", "play music", "play <song> by <artist>". Put the search query in "text" (e.g. "shape of you" or "shape of you ed sheeran"). The app plays the top result via mpv. No url, no x/y.
+- STOP: stop/pause the music that is playing NOW. Use intent STOP for "stop the music/song", "stop playing", "pause the music", "shut up". Nothing else needed — the app kills the player.
+- MAIL: write/send an email. Put the FULL professional email body in "text" (complete, ready to send, formal). Put the recipient address in "url". "reply" is a 1-line summary. The app opens a pre-filled draft in Mail.app for the user to send. Use MAIL for "write an email to X", "send a mail to Y", "email someone". Example: "email yudeat8@gmail.com about a job inquiry" → url="yudeat8@gmail.com", text="Dear Hiring Team,\n\n..." — never OPEN for email requests.
+- OPEN: open a URL/app via /usr/bin/open. "url" holds the full URL. "play <song> on youtube" (song NAMED) → use intent PLAY instead (plays directly). If NO specific song/topic is named ("play a song", "play music", "play something"), use https://www.youtube.com/. "open gmail" → https://mail.google.com. For NON-email web/app-launch requests. No x,y. NEVER use placeholders like <song+encoded> — always a concrete, valid URL.
+- TYPE: type "text" into the focused field (clipboard paste).
+- KEYS: press a combo like "cmd+shift+p" (use for shortcuts like "play/pause" = "space").
+- ANSWER: answer a knowledge question in "reply" (no action).
+- reply: 1 short spoken sentence what you did/will do. followUp: empty (actions never get follow-ups).`;
+
+  const prompt = `${system}\n\nRECENT CONTEXT:\n${mem}\n\nUSER REQUEST:\n${request}`;
+
+  switch (cfg.provider) {
+    case 'gemini': {
+      const model = cfg.model || 'gemini-3.6-flash';
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(cfg.apiKey)}`;
+      const body = { contents: [{ parts: [{ text: prompt }] }] };
+      return await postJson(url, { 'Content-Type': 'application/json' }, body, (d) => (d.candidates?.[0]?.content?.parts || []).map((p) => p.text || '').join(''));
+    }
+    case 'groq':
+    case 'openrouter': {
+      const model = cfg.provider === 'groq' ? (cfg.model || 'llama-3.3-70b-versatile') : (cfg.model || 'openrouter/free');
+      const url = cfg.provider === 'groq' ? 'https://api.groq.com/openai/v1/chat/completions' : 'https://openrouter.ai/api/v1/chat/completions';
+      const headers = { 'Content-Type': 'application/json', Authorization: `Bearer ${cfg.apiKey}` };
+      const body = { model, temperature: 0, messages: [{ role: 'user', content: prompt }] };
+      return await postJson(url, headers, body, (d) => d.choices?.[0]?.message?.content || '');
+    }
+    case 'ollama': {
+      const model = cfg.model || 'llama3.2';
+      const body = { model, stream: true, format: 'json', messages: [{ role: 'user', content: prompt }] };
+      return await postJson('http://localhost:11434/api/chat', { 'Content-Type': 'application/json' }, body, (d) => d.message?.content || '', 240000, true);
+    }
+    default:
+      throw Object.assign(new Error(`provider ${cfg.provider}`), { code: 'E_CONFIG' });
+  }
+}
+
+module.exports = { infer, transcribe, researchAnswer, commandText };
+
+// v2.1: text-only research answer. The user asked a general/world question
+// ("weather today", "capital of France") — no screenshot. Search results are
+// injected as context; the model answers from those + its knowledge. Reuses
+// the same providers with a text-only body.
+async function researchAnswer(cfg, request, searchResults) {
+  const context = searchResults
+    ? `WEB SEARCH RESULTS (use these to answer, cite them):\n${searchResults}`
+    : 'WEB SEARCH returned nothing — answer from your knowledge.';
+  const system = 'You are deskmate, a helpful assistant. Answer the user\'s question using the web search results when relevant. Be concise (1-3 sentences) and accurate. Reply with ONLY valid JSON: {"intent":"ANSWER","x":-1,"y":-1,"label":"","text":"","keys":"","reply":"<your answer>","followUp":""}.';
+  const prompt = `${system}\n\n${context}\n\nUSER QUESTION:\n${request}`;
+
+  switch (cfg.provider) {
+    case 'gemini': {
+      const model = cfg.model || 'gemini-3.6-flash';
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(cfg.apiKey)}`;
+      const body = { contents: [{ parts: [{ text: prompt }] }] };
+      return await postJson(url, { 'Content-Type': 'application/json' }, body, (d) => (d.candidates?.[0]?.content?.parts || []).map((p) => p.text || '').join(''));
+    }
+    case 'groq':
+    case 'openrouter': {
+      const model = cfg.provider === 'groq' ? (cfg.model || 'llama-3.3-70b-versatile') : (cfg.model || 'openrouter/free');
+      const url = cfg.provider === 'groq' ? 'https://api.groq.com/openai/v1/chat/completions' : 'https://openrouter.ai/api/v1/chat/completions';
+      const headers = { 'Content-Type': 'application/json', Authorization: `Bearer ${cfg.apiKey}` };
+      const body = { model, temperature: 0, messages: [{ role: 'user', content: prompt }] };
+      return await postJson(url, headers, body, (d) => d.choices?.[0]?.message?.content || '');
+    }
+    case 'ollama': {
+      const model = cfg.model || 'llama3.2';
+      const body = { model, stream: true, format: 'json', messages: [{ role: 'user', content: prompt }] };
+      return await postJson('http://localhost:11434/api/chat', { 'Content-Type': 'application/json' }, body, (d) => d.message?.content || '', 240000, true);
+    }
+    default:
+      throw Object.assign(new Error(`provider ${cfg.provider}`), { code: 'E_CONFIG' });
+  }
+}
+
+async function postJson(url, headers, body, extract, timeoutMs = 30000, streamMode = false) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  let res;
+  try {
+    res = await fetch(url, { method: 'POST', headers, body: JSON.stringify(body), signal: ctrl.signal });
+  } catch (e) {
+    clearTimeout(timer);
+    throw Object.assign(new Error(`network error: ${e.message}`), { code: 'E_VISION' });
+  }
+  clearTimeout(timer);
+  if (!res.ok) {
+    const detail = (await res.text()).slice(0, 300);
+    throw Object.assign(new Error(`${detail || res.status}`), { code: 'E_VISION' });
+  }
+  // streamMode: Ollama stream:true → NDJSON deltas (keeps Chromium's
+  // socket alive during slow local inference).
+  if (streamMode) {
+    // Keep the abort timer alive through the WHOLE body read — clearing it
+    // at headers lets a stalled stream hang forever and monopolize Ollama's
+    // single-request queue (seen live: app request blocked all others).
+    const text = await readNdjson(res.body, ctrl);
+    clearTimeout(timer);
+    if (!text) throw Object.assign(new Error('empty model response'), { code: 'E_PARSE' });
+    return text;
+  }
+  clearTimeout(timer);
+  const data = await res.json();
+  const text = extract(data);
+  if (!text) throw Object.assign(new Error('empty model response'), { code: 'E_PARSE' });
+  return text;
+}
 
 // v2: speech-to-text via the SAME provider key the user already has.
 // Groq's transcription endpoint (whisper) needs no extra signup. WAV buffer.

@@ -7,9 +7,10 @@ const { spawn } = require('node:child_process');
 const { loadConfig } = require('./config');
 const memory = require('./memory');
 const jsonfix = require('./jsonfix');
-const { infer, transcribe } = require('./vision');
+const { infer, transcribe, researchAnswer, commandText } = require('./vision');
 const exec = require('./exec');
 const { startWake } = require('./wake');
+const { search } = require('./research');
 
 let cfg = null;
 let panelWin = null;
@@ -21,6 +22,8 @@ let busy = false; // single-flight: ignore hotkey/submit while a pipeline runs
 let stepCount = 0; // task-loop step cap
 let lastActionKey = null; // stuck-loop guard: same action twice in a row
 let lastActionRepeats = 0;
+let activeRequest = ''; // the current request — queried by PLAY/OPEN handlers
+let voiceActive = false; // push-to-talk / VAD is live
 
 // ---- renderer hardening: every window gets sandbox + context isolation ----
 const WEB = {
@@ -49,20 +52,7 @@ function closeOverlay() {
   overlayWin = null;
 }
 
-function clampToDisplay(work, cx, cy, w, h) {
-  const x = Math.max(work.x + 8, Math.min(cx + 16, work.x + work.width - w - 8));
-  const y = Math.max(work.y + 8, Math.min(cy + 16, work.y + work.height - h - 8));
-  return { x: Math.round(x), y: Math.round(y) };
-}
-
-function positionPanel() {
-  if (!panelWin) return;
-  const pt = screen.getCursorScreenPoint();
-  const display = screen.getDisplayNearestPoint(pt);
-  const { width: w, height: h } = panelWin.getBounds();
-  const pos = clampToDisplay(display.workArea, pt.x, pt.y, w, h);
-  panelWin.setPosition(pos.x, pos.y);
-}
+// ---- panel window: full-screen frosted overlay, centered card via CSS ----
 
 function pushPanel() {
   if (panelWin && !panelWin.isDestroyed()) panelWin.webContents.send('panel:state', panelPending);
@@ -71,29 +61,30 @@ function pushPanel() {
 function showPanel(state) {
   panelPending = state;
   if (!panelWin) {
+    // full-screen window on the active display; transparent background,
+    // click-through on the dark backdrop (card handles its own clicks)
+    const pt = screen.getCursorScreenPoint();
+    const display = screen.getDisplayNearestPoint(pt);
     panelWin = new BrowserWindow({
       ...WEB,
-      width: 430, height: 180,
+      x: display.bounds.x, y: display.bounds.y,
+      width: display.bounds.width, height: display.bounds.height,
       frame: false, transparent: true, backgroundColor: '#00000000',
-      alwaysOnTop: true, skipTaskbar: true, resizable: false, hasShadow: true, show: false,
+      alwaysOnTop: true, skipTaskbar: true, resizable: false, hasShadow: false,
+      show: false,
     });
     panelWin.on('closed', () => { panelWin = null; panelPending = null; });
-    // window close (Escape, cancel, close) must drop any pending action
     panelWin.on('close', () => { pendingAction = null; });
-    // no blur-close: clicking another app must not destroy the panel,
-    // or the second ask is silently killed.
     panelWin.webContents.once('did-finish-load', pushPanel);
     panelWin.loadFile(path.join(__dirname, 'panel.html'));
   } else {
     pushPanel();
   }
-  positionPanel();
   if (!panelWin.isDestroyed()) {
     panelWin.show();
-    // Focus in input mode AND when showing a reply/error with a live input
-    // box, so the user can type the next question straight away without
-    // re-pressing the hotkey. Skip focus only while thinking / action-confirm.
-    if (state.mode === 'input' || state.mode === 'info' || state.mode === 'error') panelWin.focus();
+    // Focus the input box so the user can type or press Enter / Esc.
+    // Skip focus while thinking / action-confirm.
+    if (state.mode === 'input' || state.mode === 'info' || state.mode === 'error' || state.mode === 'listening') panelWin.focus();
   }
 }
 
@@ -114,6 +105,30 @@ function showOverlay(p, display) {
     },
   });
   overlayWin.once('ready-to-show', () => { if (overlayWin) overlayWin.show(); });
+}
+
+// ---- v2.5: full-screen "halo" — the border lights up when the agent activates ----
+let haloWin = null;
+function showHalo(mode) {
+  // single halo covering the display under the cursor (like the overlay)
+  closeHalo();
+  const pt = screen.getCursorScreenPoint();
+  const display = screen.getDisplayNearestPoint(pt);
+  haloWin = new BrowserWindow({
+    ...WEB,
+    x: display.bounds.x, y: display.bounds.y,
+    width: display.bounds.width, height: display.bounds.height,
+    frame: false, transparent: true, backgroundColor: '#00000000',
+    alwaysOnTop: true, skipTaskbar: true, resizable: false, hasShadow: false, focusable: false, show: false,
+  });
+  haloWin.setAlwaysOnTop(true, 'screen-saver');
+  haloWin.setIgnoreMouseEvents(true); // glow never blocks clicks
+  haloWin.loadFile(path.join(__dirname, 'halo.html'), { query: { mode: String(mode || 'active') } });
+  haloWin.once('ready-to-show', () => { if (haloWin) haloWin.show(); });
+}
+function closeHalo() {
+  if (haloWin && !haloWin.isDestroyed()) haloWin.close();
+  haloWin = null;
 }
 
 // ---- capture ----
@@ -137,13 +152,66 @@ async function captureScreen() {
 
 // ---- pipeline ----
 
+// Decide: does the request need the screen, or is it a command/knowledge
+// question? EXPLICIT screen words → capture + vision (user asked to see
+// something). Everything else → direct action (text-only LLM): "play a
+// song on youtube" → OPEN the search URL, never a screenshot.
+// Heuristic, not a model call — zero extra latency.
+// (ponytail: keyword lists; a classifier could replace this if misroutes.)
+const SCREEN_WORDS = ['screen', 'screenshot', 'desktop', 'window', 'app', 'click', 'open', 'type', 'file', 'folder', 'tab', 'button', 'menu', 'icon', 'showing', 'display', 'on my', 'this page', 'what do you see', 'what is on', 'read', 'summarize', 'summary', 'explain this', 'what does this', 'what is this', 'look at', 'see this'];
+const WORLD_WORDS = ['weather', 'today', 'news', 'capital', 'president', 'who won', 'what is the', 'what was the', 'when did', 'how far', 'population', 'meaning', 'recipe', 'who is', 'what time', 'temperature', 'forecast', 'stock', 'price', 'distance', 'history', 'famous', 'country', 'city', 'date today', 'day today'];
+
+function needsScreen(request) {
+  const r = (' ' + String(request || '').toLowerCase() + ' ');
+  for (const w of SCREEN_WORDS) if (r.includes(w)) return true;
+  return false; // default: NO screenshot — direct action
+}
+
 async function runPipeline(request, opts = {}) {
   const step = opts.step || 0;
   busy = true;
+  activeRequest = String(request || '').trim();
+  console.error(`[pipeline] start req=${JSON.stringify(String(request || '').slice(0, 80))}`);
   try {
     cfg = loadConfig();
-    const { display, b64, mime } = await captureScreen();
     const mem = cfg.memoryEnabled ? await memory.tail(cfg.memoryPath, cfg.memoryTail) : [];
+
+    if (!needsScreen(request)) {
+      // Direct-action path: NO screenshot. The LLM emits OPEN/TYPE/KEYS
+      // (execute immediately — user said "just do it") or ANSWER (speak).
+      // For world/knowledge questions, ground with research first.
+      const isWorld = WORLD_WORDS.some((w) => (' ' + String(request || '').toLowerCase() + ' ').includes(w));
+      if (isWorld) {
+        showPanel({ mode: 'thinking', reply: 'Researching…' });
+        const results = await search(request);
+        const raw = await researchAnswer(cfg, request, results);
+        const parsed = jsonfix.parse(raw);
+        lastDisplay = null;
+        if (!opts.onParsed) pendingAction = parsed;
+        try {
+          const appName = await exec.frontmostApp();
+          await memory.append(cfg.memoryPath, { app: appName, req: request, reply: parsed.reply, intent: parsed.intent, step, mode: 'research' });
+        } catch { /* best-effort */ }
+        renderResult(parsed);
+        if (opts.onParsed) opts.onParsed(parsed);
+        return;
+      }
+      showPanel({ mode: 'thinking', reply: 'Working…' });
+      const raw = await commandText(cfg, request, mem);
+      const parsed = jsonfix.parse(raw);
+      lastDisplay = null;
+      if (!opts.onParsed) pendingAction = parsed;
+      try {
+        const appName = await exec.frontmostApp();
+        await memory.append(cfg.memoryPath, { app: appName, req: request, reply: parsed.reply, intent: parsed.intent, step, mode: 'command' });
+      } catch { /* memory is best-effort */ }
+      renderResult(parsed);
+      if (opts.onParsed) opts.onParsed(parsed);
+      return;
+    }
+
+    // screen path: capture + vision (current behavior)
+    const { display, b64, mime } = await captureScreen();
     const raw = await infer(cfg, request, b64, mime, mem);
     const parsed = jsonfix.parse(raw);
 
@@ -155,7 +223,7 @@ async function runPipeline(request, opts = {}) {
 
     try {
       const appName = await exec.frontmostApp();
-      await memory.append(cfg.memoryPath, { app: appName, req: request, reply: parsed.reply, intent: parsed.intent, step });
+      await memory.append(cfg.memoryPath, { app: appName, req: request, reply: parsed.reply, intent: parsed.intent, step, mode: 'screen' });
     } catch { /* memory is best-effort */ }
 
     renderResult(parsed);
@@ -169,10 +237,81 @@ async function runPipeline(request, opts = {}) {
 
 function renderResult(p) {
   exec.stopSpeaking();
+  closeHalo(); // the border glow was for activation — dim it once we answer
   if (p.x >= 0 && p.y >= 0 && lastDisplay && ['HIGHLIGHT', 'CLICK'].includes(p.intent)) {
     showOverlay(p, lastDisplay);
   }
+  // OPEN is a direct action — the user said "just do it", no confirm.
+  if (p.intent === 'OPEN') {
+    try {
+      exec.openUrl(p.url || p.reply || '');
+      showPanel({ mode: 'info', reply: p.reply || 'Opening…' });
+      if (cfg && cfg.ttsEnabled) exec.speak(p.reply || 'Opening…');
+    } catch (e) {
+      renderError(e);
+    }
+    return;
+  }
+  // PLAY is direct too — mpv plays the top youtube result for the query.
+  if (p.intent === 'PLAY') {
+    try {
+      // Guard against the model echoing an unrelated query (saw llama3.2
+      // repeat a previous example). Derive the query from the REQUEST when
+      // the model's text doesn't look derived from it.
+      const reqWords = new Set(String(activeRequest || '').toLowerCase().split(/[^a-z0-9]+/).filter((w) => w.length > 2));
+      let query = p.text || '';
+      const textWords = query.toLowerCase().split(/[^a-z0-9]+/).filter((w) => w.length > 2);
+      const overlap = textWords.filter((w) => reqWords.has(w)).length;
+      if (!query || overlap < Math.min(1, textWords.length)) {
+        // derive: strip leading 'play'/'please' + trailing 'on youtube'
+        query = String(activeRequest || '').replace(/^(please\s+)?play\s+/i, '').replace(/\s+on\s+(youtube|music)\s*$/i, '').trim() || query;
+      }
+      exec.playMedia(query);
+      showPanel({ mode: 'info', reply: p.reply || 'Playing…' });
+      if (cfg && cfg.ttsEnabled) exec.speak(p.reply || 'Playing…');
+    } catch (e) {
+      renderError(e);
+    }
+    return;
+  }
+  // STOP is direct too — kill whatever mpv is playing.
+  if (p.intent === 'STOP') {
+    try {
+      exec.stopMedia();
+      const msg = p.reply || 'Stopped.';
+      showPanel({ mode: 'info', reply: msg });
+      if (cfg && cfg.ttsEnabled) exec.speak(msg);
+    } catch (e) {
+      renderError(e);
+    }
+    return;
+  }
+  // MAIL: build a mailto: draft (to, subject, body) and open it in Mail.app.
+  // The user reviews + clicks Send — deskmate has no SMTP/Gmail API.
+  if (p.intent === 'MAIL') {
+    try {
+      const to = String(p.url || '').trim().replace(/^mailto:/i, '');
+      const body = String(p.text || p.reply || '').trim();
+      if (!to || !body) throw Object.assign(new Error('model returned no recipient or body for MAIL'), { code: 'E_EXEC' });
+      const subject = String(p.label || 'Job Inquiry').trim();
+      const mailto = `mailto:${encodeURIComponent(to)}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
+      exec.openUrl(mailto);
+      const msg = p.reply || `Opened a draft for ${to} — review and hit Send.`;
+      showPanel({ mode: 'info', reply: msg });
+      if (cfg && cfg.ttsEnabled) exec.speak(msg);
+    } catch (e) {
+      renderError(e);
+    }
+    return;
+  }
   const follow = p.followUp ? `\n\n${p.followUp}` : '';
+  if (p.intent === 'RUN') {
+    // RUN always goes through the confirm gate — the user sees the exact
+    // command and approves it. Never "just do it" for shell.
+    showPanel({ mode: 'action', intent: 'RUN', reply: (p.reply || `Run: ${p.text || ''}`), text: p.text });
+    if (cfg && cfg.ttsEnabled) exec.speak(p.reply || 'I have a command ready — approve it in the panel.');
+    return;
+  }
   if (p.intent === 'CLICK' || p.intent === 'TYPE' || p.intent === 'KEYS') {
     showPanel({ mode: 'action', intent: p.intent, reply: (p.reply || `I'll ${p.intent.toLowerCase()} on your screen.`) + follow, text: p.text, keys: p.keys });
     if (cfg && cfg.ttsEnabled) exec.speak((p.reply || `I'll ${p.intent.toLowerCase()} on your screen.`) + (p.followUp ? ' ' + p.followUp : ''));
@@ -193,6 +332,8 @@ const ERR_HINTS = {
 };
 
 function renderError(e) {
+  console.error(`[error] ${e.code || 'E_UNKNOWN'}: ${String(e.message).slice(0, 200)}`);
+  closeHalo(); // error = not active; the border goes off
   const hint = ERR_HINTS[e.code] || 'Unexpected error.';
   const detail = e.message && e.message !== hint ? `\n\n${e.message}` : '';
   showPanel({ mode: 'error', code: e.code, reply: hint + detail });
@@ -211,6 +352,7 @@ async function executeAction(p) {
     case 'CLICK': return exec.clickAt(b.x + (p.x / 1000) * b.width, b.y + (p.y / 1000) * b.height);
     case 'TYPE': return exec.typeText(p.text);
     case 'KEYS': return exec.pressKeys(p.keys);
+    case 'RUN': return exec.runCommand(p.text);
     default:
       // Non-action intents (HIGHLIGHT/ANSWER) should never reach execution;
       // if one does (race/corrupt state), fail loudly instead of "succeeding".
@@ -221,6 +363,7 @@ async function executeAction(p) {
 function closeAll() {
   closePanel();
   closeOverlay();
+  closeHalo();
 }
 
 // ---- v2: voice recording (ffmpeg, zero deps) + TTS wiring ----
@@ -349,7 +492,18 @@ ipcMain.on('panel:confirm', async () => {
   if (!p) return;
   closeOverlay();
   try {
-    await executeAction(p);
+    const result = await executeAction(p);
+
+    // RUN is terminal: show the command output, don't re-screenshot / loop
+    // (shell doesn't change the screen, so the 3-step vision loop is wrong).
+    if (p.intent === 'RUN') {
+      stepCount = 0; lastActionKey = null; lastActionRepeats = 0;
+      const out = result && result.output ? result.output : '';
+      const head = `$ ${p.text}\n`;
+      showPanel({ mode: 'info', reply: (head + (out || '(no output)')).slice(0, 3000) });
+      if (cfg && cfg.ttsEnabled) exec.speak(result && result.code === 0 ? 'Done.' : 'That command returned an error — check the panel.');
+      return;
+    }
 
     stepCount += 1;
     if (!p.taskComplete && stepCount < 3) {
@@ -402,6 +556,7 @@ function onHotkey() {
   voiceActive = true;
   startRecording(REC);
   showPanel({ mode: 'listening', reply: 'Listening… speak, then pause.' });
+  showHalo('listening'); // border lights up when the agent is listening
   busy = true; // block re-entry while recording
 }
 
@@ -426,20 +581,28 @@ if (!app.requestSingleInstanceLock()) {
       cfg = loadConfig();
       const ok = globalShortcut.register(cfg.hotkey, onHotkey);
       if (!ok) console.error('hotkey registration failed:', cfg.hotkey);
-      // Siri-style wake loop: "hey yudeat" → command → answer.
-      // Skip in smoke mode (no mic, no app loop).
+      // Always-on listener: every spoken line is a command (no wake word
+      // needed — the user talks, it does). Sleep words ack + the border
+      // goes off, but the listener keeps running. Skip in smoke mode.
       if (cfg.wakeEnabled && !process.env.DESKMATE_SMOKE) {
         let wakeStop = null;
         try {
           wakeStop = startWake((line) => {
+            const req = String(line || '').trim();
+            if (!req) return; // heard but nothing said — keep waiting
             if (busy) return; // don't stack commands over an in-flight one
             showPanel({ mode: 'thinking', reply: 'Working…' });
-            runPipeline(String(line || ''));
-          }, cfg);
+            runPipeline(req);
+          }, cfg, () => {
+            // sleep word heard → ack + the border goes off + listener keeps running
+            exec.speak('Bye');
+            closePanel();
+            closeHalo();
+          });
         } catch (e) {
           console.error('wake:', e.message);
         }
-        app.on('will-quit', () => { if (wakeStop) wakeStop(); });
+        app.on('will-quit', () => { if (wakeStop) wakeStop.stop(); });
       }
     } catch (e) {
       console.error('config:', e.message);

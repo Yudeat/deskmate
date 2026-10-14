@@ -16,8 +16,10 @@ const DEFAULTS = {
   overlayMs: 6000,
   ttsEnabled: true,
   wakeEnabled: true,
-  wakeWord: 'yudeat',
-  wakeModel: '/opt/homebrew/share/whisper.cpp/models/ggml-base.en.bin',
+  wakeWord: 'deskmate',
+  wakeModel: '/opt/homebrew/share/whisper.cpp/models/ggml-small.en.bin',
+  wakeCaptureName: 'MacBook Air Microphone', // pick mic by name; SDL default grabs BT earbuds
+  visionModel: 'minicpm-v', // separate from cfg.model (text): vision needs a multimodal model
   wakeCapture: 1,
   wakeCommandMs: 6000,
 };
